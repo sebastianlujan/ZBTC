@@ -196,6 +196,19 @@ export function replayOptionsFromFiles(genesisPath: string, vkeyPath: string = C
   };
 }
 
+/** Block `height` of the node's active chain, or null if that chain shrank or switched under us. */
+async function fetchActiveBlock(rpc: BitcoinRpc, height: number): Promise<BlockLike | null> {
+  try {
+    return await rpc.getBlock(await rpc.getBlockHash(height), 2);
+  } catch (e) {
+    // Height out of range or block not found. Anything else (e.g. pruned data) is fatal.
+    if (e instanceof RpcError && (e.code === RPC_INVALID_PARAMETER || e.code === RPC_INVALID_ADDRESS_OR_KEY)) {
+      return null;
+    }
+    throw e;
+  }
+}
+
 function u32le(x: number): Uint8Array {
   const b = new Uint8Array(4);
   new DataView(b.buffer).setUint32(0, x, true);
@@ -488,45 +501,51 @@ export class Replay {
     let applied = 0;
     for (;;) {
       const nodeHeight = await rpc.getBlockCount();
-      while (this.tipHeight > this.baseHeight) {
-        const mine = this.hashes.get(this.tipHeight);
-        if (this.tipHeight <= nodeHeight && mine === (await rpc.getBlockHash(this.tipHeight))) break;
-        this.rollback();
-        rolledBack++;
-      }
-
-      let mismatch = false;
-      for (let h = this.tipHeight + 1; h <= nodeHeight; h++) {
-        let block: BlockLike;
-        try {
-          block = await rpc.getBlock(await rpc.getBlockHash(h), 2);
-        } catch (e) {
-          // The chain shrank or switched under us: height out of range or
-          // block not found. Anything else (e.g. pruned data) is fatal.
-          if (e instanceof RpcError && (e.code === RPC_INVALID_PARAMETER || e.code === RPC_INVALID_ADDRESS_OR_KEY)) {
-            mismatch = true;
-            break;
-          }
-          throw e;
-        }
-        try {
-          await this.applyBlock(h, block);
-          applied++;
-        } catch (e) {
-          if (e instanceof ChainMismatchError) {
-            mismatch = true;
-            break;
-          }
-          throw e;
-        }
-      }
-      if (mismatch) continue;
-
-      const best = await rpc.getBestBlockHash();
-      const nowHeight = await rpc.getBlockCount();
-      if (nowHeight <= this.baseHeight || (nowHeight === this.tipHeight && best === this.tipHash)) break;
+      rolledBack += await this.rollbackToNodeChain(rpc, nodeHeight);
+      const forward = await this.applyNodeBlocks(rpc, nodeHeight);
+      applied += forward.applied;
+      if (!forward.isChainMismatch && (await this.isSyncedWith(rpc))) break;
     }
     return { rolledBack, applied };
+  }
+
+  /** Rolls back (never below S-1) while the tip is above nodeHeight or its hash differs from the node's. */
+  private async rollbackToNodeChain(rpc: BitcoinRpc, nodeHeight: number): Promise<number> {
+    let rolledBack = 0;
+    while (this.tipHeight > this.baseHeight) {
+      const mine = this.hashes.get(this.tipHeight);
+      if (this.tipHeight <= nodeHeight && mine === (await rpc.getBlockHash(this.tipHeight))) break;
+      this.rollback();
+      rolledBack++;
+    }
+    return rolledBack;
+  }
+
+  /** Applies the node's blocks up to nodeHeight; stops early if its chain shrank or switched meanwhile. */
+  private async applyNodeBlocks(
+    rpc: BitcoinRpc,
+    nodeHeight: number,
+  ): Promise<{ applied: number; isChainMismatch: boolean }> {
+    let applied = 0;
+    for (let h = this.tipHeight + 1; h <= nodeHeight; h++) {
+      const block = await fetchActiveBlock(rpc, h);
+      if (!block) return { applied, isChainMismatch: true };
+      try {
+        await this.applyBlock(h, block);
+      } catch (e) {
+        if (e instanceof ChainMismatchError) return { applied, isChainMismatch: true };
+        throw e;
+      }
+      applied++;
+    }
+    return { applied, isChainMismatch: false };
+  }
+
+  /** True when the node's tip is ours (or still at or below S-1), i.e. it did not move during the sync. */
+  private async isSyncedWith(rpc: BitcoinRpc): Promise<boolean> {
+    const best = await rpc.getBestBlockHash();
+    const nodeHeight = await rpc.getBlockCount();
+    return nodeHeight <= this.baseHeight || (nodeHeight === this.tipHeight && best === this.tipHash);
   }
 
   // ---- Digest ----
