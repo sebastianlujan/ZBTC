@@ -93,10 +93,16 @@ export function makeGenesis(entries: readonly GenesisNote[], startHeight: number
 
 export type RejectCode = 'E_MULTI' | 'E_PARSE' | 'E_ANCHOR' | 'E_NF_DUP' | 'E_NF_SPENT' | 'E_PROOF' | 'E_TREE_FULL';
 
+type Rejection = { ok: false; code: RejectCode; reason: string };
+
 export type Validation =
   | { ok: true; env: Envelope; hBody: bigint }
-  | { ok: false; code: RejectCode; reason: string }
+  | Rejection
   | { ok: false; code: 'NONE'; reason: string };
+
+function reject(code: RejectCode, reason: string): Rejection {
+  return { ok: false, code, reason };
+}
 
 export interface AcceptedOutput {
   pos: number;
@@ -293,51 +299,64 @@ export class Replay {
    * against the current state, in the plan's order:
    *   0 extract (E_MULTI / E_PARSE)  1 parse (E_PARSE)  2 h_body
    *   3 max(S-1, H-W) <= h_anchor <= H-1 (E_ANCHOR)
-   *   4 nf0 != nf1 (E_NF_DUP), nf not in N (E_NF_SPENT)
+   *   4 nf0 != nf1 (E_NF_DUP), nf not in N (E_NF_SPENT), room for 2 leaves (E_TREE_FULL)
    *   5 Groth16 verify on [R[h_anchor], h_body, nf0, nf1, cm0, cm1] (E_PROOF)
    * Steps 0-4 are cheap and run before the proof check, so a replayed or
    * self-conflicting envelope never costs a pairing.
    */
   async validate(input: Uint8Array | Extracted, H: number): Promise<Validation> {
     // 0. extract
-    let bytes: Uint8Array;
-    if (input instanceof Uint8Array) {
-      bytes = input;
-    } else if (input.kind === 'none') {
-      return { ok: false, code: 'NONE', reason: 'no envelope' };
-    } else if (input.kind === 'reject') {
-      return { ok: false, code: input.code, reason: `carrier rejected (${input.code})` };
-    } else {
-      bytes = input.bytes;
+    if (!(input instanceof Uint8Array)) {
+      if (input.kind === 'none') return { ok: false, code: 'NONE', reason: 'no envelope' };
+      if (input.kind === 'reject') return reject(input.code, `carrier rejected (${input.code})`);
     }
+    const bytes = input instanceof Uint8Array ? input : input.bytes;
     // 1. canonical parse
     const parsed = parse(bytes);
-    if (!parsed.ok) return { ok: false, code: 'E_PARSE', reason: parsed.reason };
+    if (!parsed.ok) return reject('E_PARSE', parsed.reason);
     const env = parsed.env;
     // 2. h_body
-    const hb = hBody(bytes.subarray(0, BODY_BYTES));
-    // 3. anchor window; R[H] does not exist yet, so an anchor at H is impossible
+    const bodyHash = hBody(bytes.subarray(0, BODY_BYTES));
+    // 3. anchor window
+    const anchor = this.anchorRoot(env.hAnchor, H);
+    if (!anchor.ok) return anchor;
+    // 4. nullifiers, tree capacity
+    const conflict = this.stateConflict(env);
+    if (conflict) return conflict;
+    // 5. proof
+    const isValidProof = await this.verifyProof(env, anchor.root, bodyHash);
+    if (!isValidProof) return reject('E_PROOF', 'groth16 verification failed');
+    return { ok: true, env, hBody: bodyHash };
+  }
+
+  /** Step 3. R[H] does not exist yet, so an anchor at H is impossible. */
+  private anchorRoot(hAnchor: number, H: number): { ok: true; root: bigint } | Rejection {
     const lo = Math.max(this.baseHeight, H - W);
     const hi = H - 1;
-    if (env.hAnchor < lo || env.hAnchor > hi) {
-      return { ok: false, code: 'E_ANCHOR', reason: `h_anchor ${env.hAnchor} not in [${lo}, ${hi}]` };
-    }
-    const rAnchor = this.roots.get(env.hAnchor);
-    if (rAnchor === undefined) return { ok: false, code: 'E_ANCHOR', reason: `no root at ${env.hAnchor}` };
-    // 4. nullifiers (only duplicates rule: by nullifier, never by txid or proof bytes)
-    if (env.nf[0] === env.nf[1]) return { ok: false, code: 'E_NF_DUP', reason: 'nf0 == nf1' };
+    if (hAnchor < lo || hAnchor > hi) return reject('E_ANCHOR', `h_anchor ${hAnchor} not in [${lo}, ${hi}]`);
+    const root = this.roots.get(hAnchor);
+    if (root === undefined) return reject('E_ANCHOR', `no root at ${hAnchor}`);
+    return { ok: true, root };
+  }
+
+  /**
+   * Step 4. The only duplicate rule is by nullifier, never by txid or proof
+   * bytes (Groth16 proofs are malleable).
+   */
+  private stateConflict(env: Envelope): Rejection | null {
+    if (env.nf[0] === env.nf[1]) return reject('E_NF_DUP', 'nf0 == nf1');
     if (this.nullifiers.has(env.nf[0]) || this.nullifiers.has(env.nf[1])) {
-      return { ok: false, code: 'E_NF_SPENT', reason: 'nullifier already spent' };
+      return reject('E_NF_SPENT', 'nullifier already spent');
     }
-    if (this.tree.size + env.cm.length > MAX_LEAVES) {
-      return { ok: false, code: 'E_TREE_FULL', reason: 'note tree is full' };
-    }
-    // 5. proof
+    if (this.tree.size + env.cm.length > MAX_LEAVES) return reject('E_TREE_FULL', 'note tree is full');
+    return null;
+  }
+
+  /** Step 5. */
+  private verifyProof(env: Envelope, anchorRoot: bigint, bodyHash: bigint): Promise<boolean> {
     this.verifyCalls++;
-    const signals = publicSignalsOf(rAnchor, hb, env.nf, env.cm);
-    const ok = await verifyWithVkey(this.opts.vkey, signals, bytesToProof(env.proofBytes));
-    if (!ok) return { ok: false, code: 'E_PROOF', reason: 'groth16 verification failed' };
-    return { ok: true, env, hBody: hb };
+    const signals = publicSignalsOf(anchorRoot, bodyHash, env.nf, env.cm);
+    return verifyWithVkey(this.opts.vkey, signals, bytesToProof(env.proofBytes));
   }
 
   // ---- Block application ----
