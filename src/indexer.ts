@@ -10,7 +10,7 @@ import { readFileSync } from 'node:fs';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { extractEnvelope, parse, type Envelope, type Extracted, type TxLike } from './codec.js';
 import { BODY_BYTES, CIRCUITS, DEPTH, K_MIN, MAX_LEAVES, MAX_VALUE, W } from './constants.js';
-import { bigIntToBytes, bytesToHex, cm, hBody, hexToBytes, isField } from './crypto.js';
+import { bigIntToBytes, bytesToHex, cm, hBody, hexToBytes, isCanonicalDecimal, isField } from './crypto.js';
 import { bytesToProof, publicSignalsOf, verifyWithVkey, type VerificationKey } from './prover.js';
 import { RPC_INVALID_ADDRESS_OR_KEY, RPC_INVALID_PARAMETER, RpcError, type BitcoinRpc } from './rpc.js';
 import { NoteTree } from './tree.js';
@@ -32,10 +32,8 @@ export interface Genesis {
   notes: (GenesisNote & { cm: bigint })[];
 }
 
-const DEC = /^(0|[1-9][0-9]*)$/;
-
 function decField(x: unknown, what: string): bigint {
-  if (typeof x !== 'string' || !DEC.test(x)) throw new Error(`genesis: ${what} must be a canonical decimal string`);
+  if (!isCanonicalDecimal(x)) throw new Error(`genesis: ${what} must be a canonical decimal string`);
   return BigInt(x);
 }
 

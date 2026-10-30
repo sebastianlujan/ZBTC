@@ -50,6 +50,13 @@ export function bigIntToBytes(x: bigint, length = FIELD_BYTES): Uint8Array {
   return hexToBytes(hex.padStart(length * 2, '0'));
 }
 
+const CANONICAL_DECIMAL = /^(0|[1-9][0-9]*)$/;
+
+/** True for a string of decimal digits without leading zeros (one encoding per value). */
+export function isCanonicalDecimal(s: unknown): s is string {
+  return typeof s === 'string' && CANONICAL_DECIMAL.test(s);
+}
+
 /** Canonical residue in [0, R). */
 export function modR(x: bigint): bigint {
   const m = x % R;

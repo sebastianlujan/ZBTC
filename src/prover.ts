@@ -4,7 +4,15 @@ import { readFileSync } from 'node:fs';
 import * as snarkjs from 'snarkjs';
 import type { Groth16Proof, PublicSignals, VerificationKey } from 'snarkjs';
 import { CIRCUITS, DEPTH, FIELD_BYTES, N_IN, N_OUT, PROOF_BYTES, Q, type CircuitName } from './constants.js';
-import { bigIntToBytes, bytesToBigInt, cm as noteCm, nf as noteNf, randomField, skNfOf } from './crypto.js';
+import {
+  bigIntToBytes,
+  bytesToBigInt,
+  cm as noteCm,
+  isCanonicalDecimal,
+  nf as noteNf,
+  randomField,
+  skNfOf,
+} from './crypto.js';
 
 export type { Groth16Proof, PublicSignals, VerificationKey } from 'snarkjs';
 
@@ -125,8 +133,6 @@ export function loadVkey(circuit: CircuitName = 'main'): VerificationKey {
   return vk;
 }
 
-const DECIMAL = /^(0|[1-9][0-9]*)$/;
-
 /**
  * Groth16 verification. Returns false (never throws) on a bad proof, a wrong
  * number of public signals, a non-canonical decimal, or a signal >= r
@@ -152,7 +158,7 @@ export async function verifyWithVkey(
 ): Promise<boolean> {
   try {
     if (publicSignals.length !== vk.nPublic) return false;
-    if (!publicSignals.every((s) => typeof s === 'string' && DECIMAL.test(s))) return false;
+    if (!publicSignals.every(isCanonicalDecimal)) return false;
     return await snarkjs.groth16.verify(vk, publicSignals, proof);
   } catch {
     return false;
@@ -167,7 +173,7 @@ export async function verifyWithVkey(
 // Points are affine, so the projective z is implicit ("1" / ["1", "0"]).
 
 function coord(s: string): bigint {
-  if (!DECIMAL.test(s)) throw new Error('proof coordinate is not a decimal string');
+  if (!isCanonicalDecimal(s)) throw new Error('proof coordinate is not a decimal string');
   const x = BigInt(s);
   if (x >= Q) throw new RangeError('proof coordinate >= q');
   return x;
