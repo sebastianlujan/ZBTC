@@ -145,6 +145,27 @@ interface WalletFile {
   locks: Lock[];
 }
 
+/**
+ * Why a lock must be released now, or null to keep it:
+ *   - any lock nf is in N -> the spend (or a copy of it) was accepted;
+ *   - the anchor left the window [max(S-1, tip+1-W), tip], or R[anchor] now
+ *     differs from the root the proof used -> needs rebuild. An anchor above
+ *     the tip (the chain got shorter in a reorg) is undetermined: the same
+ *     block may come back, so the lock is kept until the height exists again;
+ *   - the carrier is not in the mempool and the tip moved more than
+ *     LOCK_EXPIRY_BLOCKS past it.
+ */
+function lockReleaseReason(lock: Lock, replay: Replay, mempool: ReadonlySet<string>): LockRelease['reason'] | null {
+  const tip = replay.tip;
+  const anchor = lock.anchorHeight;
+  if (lock.nfs.some((n) => replay.isSpent(BigInt(n)))) return 'spent';
+  const isOutOfWindow = anchor < replay.baseHeight || tip + 1 - anchor > W;
+  const isRootChanged = anchor <= tip && replay.rootAt(anchor)?.toString() !== lock.anchorRoot;
+  if (isOutOfWindow || isRootChanged) return 'needs-rebuild';
+  if (!mempool.has(lock.txid) && tip > lock.builtAtTip + LOCK_EXPIRY_BLOCKS) return 'expired';
+  return null;
+}
+
 /** Envelope bytes carried by a mempool tx, or null if it has none or left the mempool meanwhile. */
 async function mempoolEnvelopeBytes(rpc: BitcoinRpc, txid: string): Promise<Uint8Array | null> {
   let tx: RpcTx;
@@ -371,29 +392,14 @@ export class Wallet {
     }
   }
 
-  /**
-   * Releases locks:
-   *   - any lock nf is in N -> the spend (or a copy of it) was accepted;
-   *   - the anchor left the window [max(S-1, tip+1-W), tip], or R[anchor] now
-   *     differs from the root the proof used -> needs rebuild. An anchor above
-   *     the tip (the chain got shorter in a reorg) is undetermined: the same
-   *     block may come back, so the lock is kept until the height exists again;
-   *   - the carrier is not in the mempool and the tip moved > 10 blocks past it.
-   */
+  /** Releases every lock lockReleaseReason() selects and unlocks its fee coins. */
   private async maintainLocks(replay: Replay, rpc: BitcoinRpc): Promise<LockRelease[]> {
     if (this.locks.length === 0) return [];
     const mempool = new Set(await rpc.getRawMempool());
-    const tip = replay.tip;
     const released: LockRelease[] = [];
     const keep: Lock[] = [];
     for (const lock of this.locks) {
-      let reason: LockRelease['reason'] | null = null;
-      const a = lock.anchorHeight;
-      const outOfWindow = a < replay.baseHeight || tip + 1 - a > W;
-      const rootChanged = a <= tip && replay.rootAt(a)?.toString() !== lock.anchorRoot;
-      if (lock.nfs.some((n) => replay.isSpent(BigInt(n)))) reason = 'spent';
-      else if (outOfWindow || rootChanged) reason = 'needs-rebuild';
-      else if (!mempool.has(lock.txid) && tip > lock.builtAtTip + LOCK_EXPIRY_BLOCKS) reason = 'expired';
+      const reason = lockReleaseReason(lock, replay, mempool);
       if (reason) {
         released.push({ txid: lock.txid, reason });
         await this.unlockCoins(rpc, lock);
