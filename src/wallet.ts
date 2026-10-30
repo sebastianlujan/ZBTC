@@ -182,6 +182,49 @@ function selectInputs(
   return largestTwo;
 }
 
+/**
+ * Spend inputs for the selected notes, each path checked locally against
+ * R[stateHeight], padded with zero-value dummies up to N_IN.
+ */
+function witnessedInputs(
+  replay: Replay,
+  selected: readonly NoteView[],
+  stateHeight: number,
+  root: bigint,
+): SpendNote[] {
+  const inputs: SpendNote[] = selected.map((n) => {
+    const pos = n.pos as number;
+    const merklePath = replay.witness(pos, stateHeight);
+    if (NoteTree.verifyPath(n.cm, pos, merklePath) !== root) {
+      throw new Error(`path of note ${pos} does not match R[${stateHeight}]`);
+    }
+    return { v: n.v, rseed: n.rseed, pos, path: merklePath };
+  });
+  while (inputs.length < N_IN) inputs.push(dummyInput());
+  return inputs;
+}
+
+interface NewNote extends Address {
+  v: bigint;
+  rseed: bigint;
+}
+
+/** Payment and change notes with fresh rseeds, in random order. */
+function shuffledOutputs(
+  amount: bigint,
+  dest: Address,
+  change: bigint,
+  self: Address,
+): { outputs: NewNote[]; paymentIndex: number } {
+  const outputs = [
+    { v: amount, owner: dest.owner, pkEnc: dest.pkEnc, rseed: randomField() },
+    { v: change, owner: self.owner, pkEnc: self.pkEnc, rseed: randomField() },
+  ];
+  const paymentIndex = randomBytes(1)[0] & 1;
+  if (paymentIndex === 1) outputs.reverse();
+  return { outputs, paymentIndex };
+}
+
 export class Wallet {
   readonly keys: Keys;
   readonly seed: Uint8Array;
@@ -402,21 +445,10 @@ export class Wallet {
     // 2. Witnesses, checked locally against R[stateHeight].
     const root = replay.rootAt(stateHeight);
     if (root === undefined) throw new Error(`no tree state at anchor ${stateHeight}`);
-    const inputs: SpendNote[] = selected.map((n) => {
-      const pos = n.pos as number;
-      const p = replay.witness(pos, stateHeight);
-      if (NoteTree.verifyPath(n.cm, pos, p) !== root) throw new Error(`path of note ${pos} does not match R[${stateHeight}]`);
-      return { v: n.v, rseed: n.rseed, pos, path: p };
-    });
-    while (inputs.length < 2) inputs.push(dummyInput());
+    const inputs = witnessedInputs(replay, selected, stateHeight, root);
 
-    // 3. Outputs: payment + change, shuffled, fresh rseeds.
-    const outs = [
-      { v: amount, owner: dest.owner, pkEnc: dest.pkEnc, rseed: randomField(), payment: true },
-      { v: change, owner: this.keys.owner, pkEnc: this.keys.pkEnc, rseed: randomField(), payment: false },
-    ];
-    if (randomBytes(1)[0] & 1) outs.reverse();
-    const paymentIndex = outs.findIndex((o) => o.payment);
+    // 3. Outputs: payment + change.
+    const { outputs: outs, paymentIndex } = shuffledOutputs(amount, dest, change, this.keys);
 
     // 4. Circuit input, encryption, body, h_body, proof.
     const input = buildCircuitInput({
