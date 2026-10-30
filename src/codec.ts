@@ -92,30 +92,33 @@ export function serializeBody(env: Envelope): Uint8Array {
   if (env.epk.length !== N_OUT || env.ct.length !== N_OUT) throw new RangeError('wrong epk/ct count');
 
   const out = new Uint8Array(BODY_BYTES);
-  const view = new DataView(out.buffer);
   out.set(MAGIC, OFF_MAGIC);
   out[OFF_VERSION] = VERSION;
   out[OFF_TYPE] = TYPE_TRANSFER;
-  view.setUint32(OFF_H_ANCHOR, env.hAnchor, true);
+  new DataView(out.buffer).setUint32(OFF_H_ANCHOR, env.hAnchor, true);
   out[OFF_N_IN] = N_IN;
   out[OFF_N_OUT] = N_OUT;
-  env.nf.forEach((x, i) => {
-    if (!isField(x)) throw new RangeError(`nf[${i}] >= r`);
-    out.set(bigIntToBytes(x), OFF_NF + i * FIELD_BYTES);
-  });
-  env.cm.forEach((x, i) => {
-    if (!isField(x)) throw new RangeError(`cm[${i}] >= r`);
-    out.set(bigIntToBytes(x), OFF_CM + i * FIELD_BYTES);
-  });
-  env.epk.forEach((b, i) => {
-    if (b.length !== EPK_BYTES) throw new RangeError(`epk[${i}] must be ${EPK_BYTES} bytes`);
-    out.set(b, OFF_EPK + i * EPK_BYTES);
-  });
-  env.ct.forEach((b, i) => {
-    if (b.length !== CT_BYTES) throw new RangeError(`ct[${i}] must be ${CT_BYTES} bytes`);
-    out.set(b, OFF_CT + i * CT_BYTES);
-  });
+  writeFieldElements(out, OFF_NF, env.nf, 'nf');
+  writeFieldElements(out, OFF_CM, env.cm, 'cm');
+  writeChunks(out, OFF_EPK, env.epk, EPK_BYTES, 'epk');
+  writeChunks(out, OFF_CT, env.ct, CT_BYTES, 'ct');
   return out;
+}
+
+/** Writes 32-byte big-endian field elements back to back; throws on any value >= r. */
+function writeFieldElements(out: Uint8Array, offset: number, values: readonly bigint[], name: string): void {
+  values.forEach((x, i) => {
+    if (!isField(x)) throw new RangeError(`${name}[${i}] >= r`);
+    out.set(bigIntToBytes(x), offset + i * FIELD_BYTES);
+  });
+}
+
+/** Writes fixed-size opaque chunks back to back; throws on any chunk of the wrong size. */
+function writeChunks(out: Uint8Array, offset: number, chunks: readonly Uint8Array[], size: number, name: string): void {
+  chunks.forEach((b, i) => {
+    if (b.length !== size) throw new RangeError(`${name}[${i}] must be ${size} bytes`);
+    out.set(b, offset + i * size);
+  });
 }
 
 /** Writes the full 572-byte envelope. */
