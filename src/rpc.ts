@@ -181,6 +181,9 @@ export class BitcoinRpc {
   decodeRawTransaction(hex: string) {
     return this.call<RpcTx & { vsize: number; size: number; weight: number }>('decoderawtransaction', [hex]);
   }
+  createRawTransaction(inputs: Outpoint[], outputs: Record<string, unknown>[]) {
+    return this.call<string>('createrawtransaction', [inputs, outputs]);
+  }
 
   // ---- Mining ----
   generateToAddress(n: number, address: string) {
@@ -216,6 +219,12 @@ export class BitcoinRpc {
   listLockUnspent() {
     return this.call<Outpoint[]>('listlockunspent');
   }
+  fundRawTransaction(hex: string, options: { lockUnspents: boolean }) {
+    return this.call<{ hex: string }>('fundrawtransaction', [hex, options]);
+  }
+  signRawTransactionWithWallet(hex: string) {
+    return this.call<{ hex: string; complete: boolean }>('signrawtransactionwithwallet', [hex]);
+  }
 }
 
 // ---- Envelope publication ----
@@ -246,13 +255,10 @@ export async function buildEnvelopeTx(
   bytes: Uint8Array,
   opts: BuildEnvelopeOptions = {},
 ): Promise<EnvelopeTx> {
-  const w = rpc.wallet(walletName);
-  const raw = await rpc.call<string>('createrawtransaction', [[], [{ data: bytesToHex(bytes) }]]);
-  const funded = await w.call<{ hex: string }>('fundrawtransaction', [
-    raw,
-    { lockUnspents: opts.lockUnspents ?? true },
-  ]);
-  const signed = await w.call<{ hex: string; complete: boolean }>('signrawtransactionwithwallet', [funded.hex]);
+  const feeWallet = rpc.wallet(walletName);
+  const raw = await rpc.createRawTransaction([], [{ data: bytesToHex(bytes) }]);
+  const funded = await feeWallet.fundRawTransaction(raw, { lockUnspents: opts.lockUnspents ?? true });
+  const signed = await feeWallet.signRawTransactionWithWallet(funded.hex);
   if (!signed.complete) throw new Error('signrawtransactionwithwallet: incomplete');
   const decoded = await rpc.decodeRawTransaction(signed.hex);
   const inputs = decoded.vin.map((i) => ({ txid: i.txid as string, vout: i.vout as number }));
