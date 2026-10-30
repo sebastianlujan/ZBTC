@@ -5,14 +5,13 @@ import { readFileSync } from 'node:fs';
 import { afterAll, describe, expect, it } from 'vitest';
 import { parse } from '../../src/codec.js';
 import { CIRCUITS } from '../../src/constants.js';
-import { bytesToHex, cm, keysFromSeed, randomField } from '../../src/crypto.js';
+import { bytesToHex, cm, randomField } from '../../src/crypto.js';
 import { bytesToProof, dummyInput, proofToBytes, shutdownProver, verify, type VerificationKey } from '../../src/prover.js';
 import { NoteTree } from '../../src/tree.js';
 import { craftTransfer, withProofBytes } from '../helpers/craft.js';
 import { rerandomize } from '../helpers/rerandomize.js';
+import { alice, bob } from '../helpers/fixtures.js';
 
-const alice = keysFromSeed(new Uint8Array(32).fill(0xa1));
-const bob = keysFromSeed(new Uint8Array(32).fill(0xb0));
 const vk = JSON.parse(readFileSync(CIRCUITS.main.vkey, 'utf8')) as VerificationKey;
 
 afterAll(async () => {

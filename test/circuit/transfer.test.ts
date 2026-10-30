@@ -29,6 +29,7 @@ import {
   type TransferParams,
 } from '../../src/prover.js';
 import { NoteTree } from '../../src/tree.js';
+import { alice, bob } from '../helpers/fixtures.js';
 
 // ---- Locate constraints by source line ----
 
@@ -67,8 +68,6 @@ async function expectUnsat(input: CircuitInput, at: RegExp, circuit: CircuitName
 
 // ---- Fixture: a small tree holding notes of Alice and others ----
 
-const alice: Keys = keysFromSeed(new Uint8Array(32).fill(0xa1));
-const bob: Keys = keysFromSeed(new Uint8Array(32).fill(0xb0));
 const mallory: Keys = keysFromSeed(new Uint8Array(32).fill(0x3a));
 
 interface Note {

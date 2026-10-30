@@ -20,13 +20,11 @@ import {
   type TxLike,
 } from '../../src/codec.js';
 import { BODY_BYTES, CIRCUITS, ENVELOPE_BYTES, Q, R } from '../../src/constants.js';
-import { bigIntToBytes, bytesToHex, cm, hBody, keysFromSeed, randomField } from '../../src/crypto.js';
+import { bigIntToBytes, bytesToHex, cm, hBody, randomField } from '../../src/crypto.js';
 import { bytesToProof, dummyInput, publicSignalsOf, shutdownProver, verify } from '../../src/prover.js';
 import { NoteTree } from '../../src/tree.js';
 import { craftTransfer, type CraftedTransfer } from '../helpers/craft.js';
-
-const alice = keysFromSeed(new Uint8Array(32).fill(0xa1));
-const bob = keysFromSeed(new Uint8Array(32).fill(0xb0));
+import { alice, bob } from '../helpers/fixtures.js';
 
 let real: CraftedTransfer;
 let bytes: Uint8Array;

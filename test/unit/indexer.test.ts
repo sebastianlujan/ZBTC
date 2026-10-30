@@ -5,7 +5,7 @@ import { utf8ToBytes } from '@noble/hashes/utils.js';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { envelopeScript, OFF_CT, OFF_NF, OFF_VERSION } from '../../src/codec.js';
 import { R } from '../../src/constants.js';
-import { bytesToHex, keysFromSeed, randomField } from '../../src/crypto.js';
+import { bytesToHex, randomField } from '../../src/crypto.js';
 import {
   ChainMismatchError,
   loadGenesis,
@@ -17,10 +17,7 @@ import {
 import { dummyInput, shutdownProver } from '../../src/prover.js';
 import { NoteTree } from '../../src/tree.js';
 import { craftTransfer } from '../helpers/craft.js';
-import { replayOptionsFor } from '../helpers/fixtures.js';
-
-const alice = keysFromSeed(new Uint8Array(32).fill(0xa1));
-const bob = keysFromSeed(new Uint8Array(32).fill(0xb0));
+import { alice, bob, replayOptionsFor } from '../helpers/fixtures.js';
 
 // ---- Genesis: S = 10, notes G1..G4 (Alice) + G5 (Bob) at positions 0..4 ----
 const S = 10;

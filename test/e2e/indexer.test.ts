@@ -1,17 +1,14 @@
 // E2E indexer on a real bitcoind: accept, replay in a new carrier ->
 // E_NF_SPENT, reorg away and back, incremental sync == fresh replay.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { keysFromSeed, randomField } from '../../src/crypto.js';
+import { randomField } from '../../src/crypto.js';
 import { makeGenesis, Replay, type ReplayOptions } from '../../src/indexer.js';
 import { dummyInput, shutdownProver } from '../../src/prover.js';
 import { publishEnvelope } from '../../src/rpc.js';
 import { NoteTree } from '../../src/tree.js';
 import { craftTransfer, type CraftedTransfer } from '../helpers/craft.js';
-import { replayOptionsFor } from '../helpers/fixtures.js';
+import { alice, bob, replayOptionsFor } from '../helpers/fixtures.js';
 import { fundWallet, initMiner, mine, startNode, type RegtestNode } from '../helpers/regtest.js';
-
-const alice = keysFromSeed(new Uint8Array(32).fill(0xa1));
-const bob = keysFromSeed(new Uint8Array(32).fill(0xb0));
 
 let node: RegtestNode;
 let opts: ReplayOptions;

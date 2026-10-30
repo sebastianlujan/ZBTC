@@ -4,16 +4,15 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { extractEnvelope, parse } from '../../src/codec.js';
 import { BODY_BYTES } from '../../src/constants.js';
-import { bytesToHex, cm, decryptNote, hBody, keysFromSeed, noteMatches, randomField } from '../../src/crypto.js';
+import { bytesToHex, cm, decryptNote, hBody, noteMatches, randomField } from '../../src/crypto.js';
 import { bytesToProof, dummyInput, publicSignalsOf, shutdownProver, verify } from '../../src/prover.js';
 import { buildEnvelopeTx, publishEnvelope } from '../../src/rpc.js';
 import { NoteTree } from '../../src/tree.js';
 import { craftTransfer, type CraftedTransfer } from '../helpers/craft.js';
 import { fundWallet, initMiner, mine, startNode, waitForHeight, type RegtestNode } from '../helpers/regtest.js';
+import { alice, bob } from '../helpers/fixtures.js';
 
 const FEE_WALLET = 'alice-fee';
-const alice = keysFromSeed(new Uint8Array(32).fill(0xa1));
-const bob = keysFromSeed(new Uint8Array(32).fill(0xb0));
 
 let node: RegtestNode;
 let strict: RegtestNode | undefined;
