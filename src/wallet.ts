@@ -39,6 +39,11 @@ import { NoteTree } from './tree.js';
 /** Blocks after which a lock whose carrier left the mempool is released. */
 export const LOCK_EXPIRY_BLOCKS = 10;
 
+const SEED_BYTES = 32;
+/** Owner read/write only: the file holds the spending seed. */
+const WALLET_FILE_MODE = 0o600;
+const WALLET_NAME = /^[a-z0-9][a-z0-9_-]*$/i;
+
 export type NoteState = 'candidate' | 'confirmed' | 'spendable' | 'pending-spend' | 'spent';
 
 export interface NoteView {
@@ -337,7 +342,7 @@ export class Wallet {
   static create(dir: string, name: string): Wallet {
     const file = Wallet.pathFor(dir, name);
     if (existsSync(file)) throw new Error(`wallet ${name} already exists`);
-    const w = new Wallet(randomBytes(32), [], file);
+    const w = new Wallet(randomBytes(SEED_BYTES), [], file);
     w.save();
     return w;
   }
@@ -353,7 +358,7 @@ export class Wallet {
   }
 
   private static pathFor(dir: string, name: string): string {
-    if (!/^[a-z0-9][a-z0-9_-]*$/i.test(name)) throw new Error(`invalid wallet name: ${name}`);
+    if (!WALLET_NAME.test(name)) throw new Error(`invalid wallet name: ${name}`);
     return path.join(dir, `${name}.json`);
   }
 
@@ -361,8 +366,8 @@ export class Wallet {
     if (!this.file) return;
     mkdirSync(path.dirname(this.file), { recursive: true });
     const data: WalletFile = { seed: bytesToHex(this.seed), locks: this.locks };
-    writeFileSync(this.file, JSON.stringify(data, null, 2) + '\n', { mode: 0o600 });
-    chmodSync(this.file, 0o600);
+    writeFileSync(this.file, JSON.stringify(data, null, 2) + '\n', { mode: WALLET_FILE_MODE });
+    chmodSync(this.file, WALLET_FILE_MODE); // `mode` only applies when the file is created
   }
 
   get owner(): bigint {
