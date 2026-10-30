@@ -62,8 +62,16 @@ export {
   PROOF_BYTES,
 };
 
+// ---- Script opcodes ----
+const OP_RETURN = 0x6a;
+/** Opcodes 0x01..0x4b push that many bytes. */
+const OP_PUSHBYTES_MAX = 0x4b;
+const OP_PUSHDATA1 = 0x4c;
+const OP_PUSHDATA2 = 0x4d;
+const OP_PUSHDATA4 = 0x4e;
+
 /** OP_RETURN (0x6a) + OP_PUSHDATA2 (0x4d) + LE16(572) = 6a 4d 3c 02. */
-export const SCRIPT_PREFIX = new Uint8Array([0x6a, 0x4d, ENVELOPE_BYTES & 0xff, ENVELOPE_BYTES >> 8]);
+export const SCRIPT_PREFIX = new Uint8Array([OP_RETURN, OP_PUSHDATA2, ENVELOPE_BYTES & 0xff, ENVELOPE_BYTES >> 8]);
 export const SCRIPT_BYTES = SCRIPT_PREFIX.length + ENVELOPE_BYTES; // 576
 
 export interface Envelope {
@@ -275,22 +283,22 @@ export type Extracted =
  * malformed), or null if the first opcode is not a data push.
  */
 function firstPushData(script: Uint8Array): Uint8Array | null {
-  if (script.length < 2 || script[0] !== 0x6a) return null;
+  if (script.length < 2 || script[0] !== OP_RETURN) return null;
   const op = script[1];
   let len: number;
   let start: number;
-  if (op >= 0x01 && op <= 0x4b) {
+  if (op >= 0x01 && op <= OP_PUSHBYTES_MAX) {
     len = op;
     start = 2;
-  } else if (op === 0x4c) {
+  } else if (op === OP_PUSHDATA1) {
     if (script.length < 3) return null;
     len = script[2];
     start = 3;
-  } else if (op === 0x4d) {
+  } else if (op === OP_PUSHDATA2) {
     if (script.length < 4) return null;
     len = script[2] | (script[3] << 8);
     start = 4;
-  } else if (op === 0x4e) {
+  } else if (op === OP_PUSHDATA4) {
     if (script.length < 6) return null;
     len = (script[2] | (script[3] << 8) | (script[4] << 16) | (script[5] << 24)) >>> 0;
     start = 6;
@@ -316,12 +324,12 @@ export function extractEnvelope(tx: TxLike): Extracted {
   const candidates: { vout: number; script: Uint8Array }[] = [];
   tx.vout.forEach((out, idx) => {
     const hex = out.scriptPubKey?.hex;
-    if (typeof hex !== 'string' || !hex.startsWith('6a')) return;
+    if (typeof hex !== 'string' || !hex.startsWith(OP_RETURN.toString(16))) return;
     let script: Uint8Array;
     try {
       script = hexToBytes(hex);
     } catch {
-      return;
+      return; // malformed hex cannot carry an envelope
     }
     const data = firstPushData(script);
     if (data && startsWithMagic(data)) candidates.push({ vout: out.n ?? idx, script });
