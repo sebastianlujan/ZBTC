@@ -142,7 +142,7 @@ R04 constrains only its stated note equations. Snapshot, outpoint and recipient 
 
 ## Minimal interface
 
-Implemented as `prepare` and `unlock` in `src/unlock.ts` and `buildSpend` in `src/demo.ts`; `pnpm demo` writes the files below to `v2/.demo/`. `prepare` also takes the Bitcoin key it wraps, and the ciphertext file is `ciphertext.bin`. `fixture.json` freezes the funding outpoint but records no separate block snapshot, and the key convention is fixed in code rather than stored.
+Implemented as `prepare` and `unlock` in `src/unlock.ts` and `buildSpend` in `src/demo.ts`; `pnpm demo` writes the files below to `v2/.demo/`. `prepare` also takes the Bitcoin key it wraps, and the ciphertext file is `ciphertext.bin`. The key convention (BIP341 key path, no script tree) is fixed in code rather than stored in `fixture.json`.
 
 ```text
 prepare(fixture, btc_sk) -> ciphertext, envelope, witness, setup attempt, cofactor
@@ -201,7 +201,7 @@ buildSpend(fixture, recovered_btc_key) -> signed transaction
 **core**; depends on: P00. Define a minimal amount/owner/opening relation tied to the one local funding fixture.
 
 - [x] Use R04 exactly: amount=100000, k_owner=3, rho=5, owner_tag=9, C_note=100014 and N=15; declare this algebraic commitment deliberately weak.
-- [x] Freeze one selected regtest snapshot and associate this issued note with one UTXO. Treat snapshot/outpoint/recipient as chosen metadata, not dynamically checked AADP state. *(The outpoint is frozen; no separate block snapshot is recorded.)*
+- [x] Freeze one selected regtest snapshot and associate this issued note with one UTXO. Treat snapshot/outpoint/recipient as chosen metadata, not dynamically checked AADP state. *(The snapshot is the block that confirmed the funding.)*
 - [x] Specify the four witness coordinates, fixed note/output amount and 101000=100000+1000 funding/output/fee split; keep every Bitcoin key byte separate from field-element encoding.
 
 **Deliverable:** D03 — One concrete note/funding fixture and its four-row coefficient/witness specification.

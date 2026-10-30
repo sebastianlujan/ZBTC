@@ -10,7 +10,7 @@
 // key. A wrong key cannot sign for the funding output, and Core would say so.
 import { bytesToHex, hexToBytes, randomBytes } from '@noble/hashes/utils.js';
 import { FUNDING_SATS, SETUP_SEED_BYTES } from './constants.js';
-import { createFixture, type Fixture, type Outpoint } from './fixture.js';
+import { createFixture, type BlockSnapshot, type Fixture, type Outpoint } from './fixture.js';
 import { btcToSats, type BitcoinRpc, type MempoolAcceptResult } from './rpc.js';
 import { generateSecretKey, internalKey, outputScript, tweakPublicKey, tweakSecretKey } from './taproot.js';
 import { serialize, signKeyPath, txid, withWitness, type Transaction } from './transaction.js';
@@ -41,6 +41,12 @@ interface TaprootKey {
   readonly address: string;
 }
 
+/** The funding output and the block that confirmed it: the snapshot the fixture is frozen at. */
+interface FundedOutput {
+  readonly outpoint: Outpoint;
+  readonly snapshot: BlockSnapshot;
+}
+
 interface Recipient {
   readonly address: string;
   readonly script: Uint8Array;
@@ -56,6 +62,7 @@ export interface Broadcast {
 
 export interface DemoChecks {
   readonly coreDerivesFundingScript: boolean;
+  readonly fundingInSnapshot: boolean;
   readonly recoveredKeyMatchesSetup: boolean;
   readonly mempoolAccepted: boolean;
   readonly feeMatches: boolean;
@@ -97,14 +104,15 @@ async function createTaprootKey(rpc: BitcoinRpc): Promise<TaprootKey> {
 }
 
 /** The funding output is found by its script, never assumed to sit at a fixed vout. */
-async function fundTaprootOutput(rpc: BitcoinRpc, miner: Miner, key: TaprootKey): Promise<Outpoint> {
+async function fundTaprootOutput(rpc: BitcoinRpc, miner: Miner, key: TaprootKey): Promise<FundedOutput> {
   const fundingTxid = await miner.wallet.sendToAddress(key.address, FUNDING_SATS);
-  await rpc.generateToAddress(CONFIRMATION_BLOCKS, miner.address);
+  const [blockHash] = await rpc.generateToAddress(CONFIRMATION_BLOCKS, miner.address);
   const funding = await rpc.getRawTransaction(fundingTxid, true);
   const output = funding.vout.find(({ scriptPubKey }) => scriptPubKey.hex === bytesToHex(key.script));
   if (output === undefined) throw new Error(`funding ${fundingTxid} has no output to the Taproot key`);
   if (btcToSats(output.value) !== FUNDING_SATS) throw new Error(`funding ${fundingTxid} pays the wrong amount`);
-  return { txid: fundingTxid, vout: output.n };
+  const { height } = await rpc.getBlock(blockHash);
+  return { outpoint: { txid: fundingTxid, vout: output.n }, snapshot: { blockHash, height } };
 }
 
 async function createRecipient(rpc: BitcoinRpc): Promise<Recipient> {
@@ -115,12 +123,13 @@ async function createRecipient(rpc: BitcoinRpc): Promise<Recipient> {
   return { address, script: hexToBytes(scriptPubKey) };
 }
 
-async function freezeFixture(rpc: BitcoinRpc, fundingOutpoint: Outpoint, recipient: Recipient): Promise<Fixture> {
+async function freezeFixture(rpc: BitcoinRpc, funded: FundedOutput, recipient: Recipient): Promise<Fixture> {
   const { subversion } = await rpc.getNetworkInfo();
   return createFixture({
     seed: randomBytes(SETUP_SEED_BYTES),
     manifest: { nodeVersion: process.versions.node, bitcoinCoreVersion: subversion },
-    fundingOutpoint,
+    snapshot: funded.snapshot,
+    fundingOutpoint: funded.outpoint,
     recipientScript: recipient.script,
   });
 }
@@ -165,6 +174,7 @@ interface SpendRun {
 /** What Core reports after the spend is mined; judged separately so the checks stay pure. */
 interface ChainEvidence {
   readonly fundingScriptHex: string | undefined;
+  readonly fundingBlockHash: string | undefined;
   readonly minedTxids: readonly string[];
   readonly confirmations: number;
   readonly coreHex: string;
@@ -178,6 +188,7 @@ async function observeChain(rpc: BitcoinRpc, run: SpendRun): Promise<ChainEviden
   const recipientWallet = rpc.wallet(RECIPIENT_WALLET);
   return {
     fundingScriptHex: (await rpc.validateAddress(run.fundingKey.address)).scriptPubKey,
+    fundingBlockHash: (await rpc.getRawTransaction(fundingTxid, true)).blockhash,
     minedTxids: (await rpc.getBlock(blockHash)).tx,
     confirmations: (await rpc.getRawTransaction(localTxid, true)).confirmations ?? 0,
     coreHex: await rpc.getRawTransaction(localTxid),
@@ -190,6 +201,7 @@ function judgeSpend({ fixture, fundingKey, recoveredKey, broadcast }: SpendRun, 
   const fee = broadcast.mempoolAccept.fees?.base;
   return {
     coreDerivesFundingScript: chain.fundingScriptHex === bytesToHex(fundingKey.script),
+    fundingInSnapshot: chain.fundingBlockHash === fixture.snapshot.blockHash,
     recoveredKeyMatchesSetup: bytesToHex(recoveredKey) === bytesToHex(fundingKey.secretKey),
     mempoolAccepted: broadcast.mempoolAccept.allowed === true,
     feeMatches: fee !== undefined && btcToSats(fee) === fixture.spend.feeSats,
@@ -214,9 +226,9 @@ export function failedChecks(checks: DemoChecks): string[] {
 export async function runDemo(rpc: BitcoinRpc): Promise<DemoResult> {
   const miner = await startMiner(rpc);
   const fundingKey = await createTaprootKey(rpc);
-  const fundingOutpoint = await fundTaprootOutput(rpc, miner, fundingKey);
+  const funded = await fundTaprootOutput(rpc, miner, fundingKey);
   const recipient = await createRecipient(rpc);
-  const fixture = await freezeFixture(rpc, fundingOutpoint, recipient);
+  const fixture = await freezeFixture(rpc, funded, recipient);
   const prepared = prepare(fixture, fundingKey.secretKey);
   const recoveredKey = unlock(prepared.ciphertext, prepared.envelope, prepared.witness);
   const broadcast = await broadcastSpend(rpc, miner, buildSpend(fixture, recoveredKey));

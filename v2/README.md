@@ -30,7 +30,7 @@ pnpm demo
 ```
 
 `pnpm demo` starts a fresh regtest node in `.regtest/` (RPC port 18643), runs the whole
-path, prints the spend txid and ten checks, and writes the artifacts to `.demo/`. It exits
+path, prints the spend txid and eleven checks, and writes the artifacts to `.demo/`. It exits
 non-zero if any check fails. `KEEP=1 pnpm demo` leaves the node running.
 
 ## Demo in one screen
@@ -41,12 +41,13 @@ non-zero if any check fails. `KEEP=1 pnpm demo` leaves the node running.
   `w=(x0,k_owner,rho,a)=(1,3,5,100000)`.
 
 1. **Fund.** Generate a Bitcoin key, derive its Taproot output (BIP341, no script tree),
-   and fund it with 101,000 sats. Core derives the address from `rawtr(Q)`.
+   and fund it with 101,000 sats. Core derives the address from `rawtr(Q)`. The block
+   that confirms the funding is the snapshot the fixture is frozen at.
 2. **Encrypt.** Emit the four R04 coefficient rows. Run Algorithm 1 for that relation,
    then encrypt a field element `mu` with Algorithm 2, all from a recorded seed.
 3. **Wrap the key.** Derive `K` with HKDF from the 32-byte big-endian encoding of `mu`,
    then XChaCha20-Poly1305-encrypt the 32 key bytes. The associated data binds the note
-   constants, the funding outpoint, the recipient and the amounts.
+   constants, the snapshot, the funding outpoint, the recipient and the amounts.
 4. **Unlock.** Algorithm 3 recovers `mu` from the ciphertext and the note opening alone,
    which unwraps the key. `unlock` accepts no setup value.
 5. **Spend.** Sign a key-path spend of 100,000 sats to the recipient with a 1,000-sat fee,
@@ -63,6 +64,7 @@ Every run asserts these against Core and records them in `.demo/result.json`:
 | Check | Meaning |
 | --- | --- |
 | `coreDerivesFundingScript` | Core's address for `rawtr(Q)` has the script computed locally. |
+| `fundingInSnapshot` | The funding transaction is in the fixture's snapshot block. |
 | `recoveredKeyMatchesSetup` | The key unlocked from the note witness equals the setup key. |
 | `mempoolAccepted` | `testmempoolaccept` accepts the locally signed spend. |
 | `feeMatches` | Core reports a 1,000-sat fee. |
@@ -77,7 +79,7 @@ Every run asserts these against Core and records them in `.demo/result.json`:
 
 ```sh
 pnpm typecheck
-pnpm test:unit   # 79 tests: field, AADP (R01), envelope, note (R04), fixture, unlock, Taproot, transactions
+pnpm test:unit   # 82 tests: field, AADP (R01), envelope, note (R04), fixture, unlock, Taproot, transactions
 pnpm test:e2e    # the whole demo against a throwaway bitcoind
 ```
 
@@ -108,7 +110,7 @@ buildSpend(fixture, recovered_btc_key) -> signed transaction
 
 | File in `.demo/` | Contents |
 | --- | --- |
-| `fixture.json` | Manifest (Node, Core), setup seed, note opening, funding outpoint, recipient script and amounts. Setup side: it holds known test secrets. |
+| `fixture.json` | Manifest (Node, Core), setup seed, note opening, block snapshot, funding outpoint, recipient script and amounts. Setup side: it holds known test secrets. |
 | `witness.json` | The R04 assignment in canonical coordinate order. |
 | `ciphertext.bin` | Mhat_0..Mhat_3 as dense 32-byte big-endian entries: exactly 10,368 bytes. |
 | `envelope.json` | Nonce, AEAD ciphertext and associated data. |

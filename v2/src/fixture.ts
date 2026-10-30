@@ -1,5 +1,6 @@
 // The frozen experiment (P00): everything a setup needs to replay one run bit
-// for bit, plus the public Bitcoin terms the envelope authenticates.
+// for bit, plus the public Bitcoin terms the envelope authenticates: the block
+// snapshot that confirmed the funding, the funding outpoint and the recipient.
 //
 // Data flow: createFixture → serializeFixture → fixture.json. parseFixture
 // reads it back and refuses any file that breaks the demo's invariants (seed
@@ -10,6 +11,7 @@
 import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js';
 import {
   BASE_FIELD_MODULUS,
+  BLOCK_HASH_BYTES,
   ENVELOPE_AD_DOMAIN,
   FEE_SATS,
   FIXTURE_VERSION,
@@ -34,6 +36,13 @@ export interface Manifest {
   readonly bitcoinCoreVersion: string;
 }
 
+/** The chain state the fixture is frozen at: the block that confirmed the funding transaction. */
+export interface BlockSnapshot {
+  /** Lowercase hex in the byte order Core displays. */
+  readonly blockHash: string;
+  readonly height: number;
+}
+
 export interface Outpoint {
   /** Lowercase hex in the byte order Core displays. */
   readonly txid: string;
@@ -53,29 +62,33 @@ export interface Fixture {
   readonly manifest: Manifest;
   readonly seed: Uint8Array;
   readonly note: NoteOpening;
+  readonly snapshot: BlockSnapshot;
   readonly spend: SpendTerms;
 }
 
 export interface FixtureInputs {
   readonly seed: Uint8Array;
   readonly manifest: Manifest;
+  readonly snapshot: BlockSnapshot;
   readonly fundingOutpoint: Outpoint;
   readonly recipientScript: Uint8Array;
 }
 
 const TXID_PATTERN = new RegExp(`^[0-9a-f]{${2 * TXID_BYTES}}$`);
+const BLOCK_HASH_PATTERN = new RegExp(`^[0-9a-f]{${2 * BLOCK_HASH_BYTES}}$`);
 /** vout is a u32 on the wire. */
 const MAX_VOUT = 0xffff_ffff;
 
 // ---- Construction ----
 
 /** The toy note and the demo amounts around the caller's seed and Bitcoin terms. */
-export function createFixture({ seed, manifest, fundingOutpoint, recipientScript }: FixtureInputs): Fixture {
+export function createFixture({ seed, manifest, snapshot, fundingOutpoint, recipientScript }: FixtureInputs): Fixture {
   const fixture: Fixture = {
     version: FIXTURE_VERSION,
     manifest,
     seed,
     note: TOY_NOTE_OPENING,
+    snapshot,
     spend: { fundingOutpoint, recipientScript, fundingSats: FUNDING_SATS, paymentSats: PAYMENT_SATS, feeSats: FEE_SATS },
   };
   assertValidFixture(fixture);
@@ -83,6 +96,13 @@ export function createFixture({ seed, manifest, fundingOutpoint, recipientScript
 }
 
 // ---- Invariants ----
+
+function assertValidSnapshot({ blockHash, height }: BlockSnapshot): void {
+  if (!BLOCK_HASH_PATTERN.test(blockHash)) {
+    throw new RangeError(`block hash must be ${2 * BLOCK_HASH_BYTES} lowercase hex characters`);
+  }
+  if (!Number.isInteger(height) || height < 0) throw new RangeError('block height must be a non-negative integer');
+}
 
 function assertValidOutpoint({ txid, vout }: Outpoint): void {
   if (!TXID_PATTERN.test(txid)) throw new RangeError(`txid must be ${2 * TXID_BYTES} lowercase hex characters`);
@@ -99,6 +119,7 @@ function assertBalancedSpend({ fundingSats, paymentSats, feeSats, recipientScrip
 function assertValidFixture(fixture: Fixture): void {
   if (fixture.version !== FIXTURE_VERSION) throw new RangeError(`unsupported fixture version ${fixture.version}`);
   if (fixture.seed.length !== SETUP_SEED_BYTES) throw new RangeError(`seed must be ${SETUP_SEED_BYTES} bytes`);
+  assertValidSnapshot(fixture.snapshot);
   assertValidOutpoint(fixture.spend.fundingOutpoint);
   assertBalancedSpend(fixture.spend);
   if (issueNote(fixture.note).exitAmount !== fixture.spend.paymentSats) {
@@ -108,12 +129,13 @@ function assertValidFixture(fixture: Fixture): void {
 
 // ---- JSON ----
 
-export function serializeFixture({ version, manifest, seed, note, spend }: Fixture): string {
+export function serializeFixture({ version, manifest, seed, note, snapshot, spend }: Fixture): string {
   const json = {
     version,
     manifest,
     seed: bytesToHex(seed),
     note: { ownerKey: `${note.ownerKey}`, rho: `${note.rho}`, amount: `${note.amount}` },
+    snapshot,
     spend: {
       fundingOutpoint: spend.fundingOutpoint,
       recipientScript: bytesToHex(spend.recipientScript),
@@ -144,6 +166,7 @@ export function parseFixture(text: string): Fixture {
   const root = readObject(JSON.parse(text), 'fixture');
   const manifest = readObject(root.manifest, 'manifest');
   const note = readObject(root.note, 'note');
+  const snapshot = readObject(root.snapshot, 'snapshot');
   const fixture: Fixture = {
     version: readInteger(root.version, 'version'),
     manifest: {
@@ -155,6 +178,10 @@ export function parseFixture(text: string): Fixture {
       ownerKey: readBigInt(note.ownerKey, 'note.ownerKey'),
       rho: readBigInt(note.rho, 'note.rho'),
       amount: readBigInt(note.amount, 'note.amount'),
+    },
+    snapshot: {
+      blockHash: readString(snapshot.blockHash, 'snapshot.blockHash'),
+      height: readInteger(snapshot.height, 'snapshot.height'),
     },
     spend: parseSpend(readObject(root.spend, 'spend')),
   };
@@ -169,7 +196,7 @@ export function parseFixture(text: string): Fixture {
  * field, so its key order (and therefore its bytes) never depends on input.
  * AEAD authenticates these terms; it does not make them part of the AADP relation.
  */
-export function envelopeAssociatedData({ version, note, spend }: Fixture): Uint8Array {
+export function envelopeAssociatedData({ version, note, snapshot, spend }: Fixture): Uint8Array {
   const issued = issueNote(note);
   const binding = {
     domain: ENVELOPE_AD_DOMAIN,
@@ -181,6 +208,7 @@ export function envelopeAssociatedData({ version, note, spend }: Fixture): Uint8
       nullifierTag: `${issued.nullifierTag}`,
       exitAmount: `${issued.exitAmount}`,
     },
+    snapshot: { blockHash: snapshot.blockHash, height: snapshot.height },
     fundingOutpoint: { txid: spend.fundingOutpoint.txid, vout: spend.fundingOutpoint.vout },
     recipientScript: bytesToHex(spend.recipientScript),
     amounts: { fundingSats: `${spend.fundingSats}`, paymentSats: `${spend.paymentSats}`, feeSats: `${spend.feeSats}` },

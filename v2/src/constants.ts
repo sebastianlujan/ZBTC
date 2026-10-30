@@ -47,6 +47,8 @@ export const MAX_SETUP_ATTEMPTS = 8;
 export const SECRET_KEY_BYTES = 32;
 /** A txid is a double SHA-256 digest. */
 export const TXID_BYTES = 32;
+/** A block hash is a double SHA-256 digest of the block header. */
+export const BLOCK_HASH_BYTES = 32;
 /** BIP340 public keys are the x coordinate alone; Y is implicitly even. */
 export const X_ONLY_KEY_BYTES = 32;
 
@@ -60,4 +62,4 @@ export const FUNDING_SATS = PAYMENT_SATS + FEE_SATS;
 
 // ---- Fixture ----
 /** Bumped whenever the fixture's JSON shape changes, so an old file is rejected rather than misread. */
-export const FIXTURE_VERSION = 1;
+export const FIXTURE_VERSION = 2;

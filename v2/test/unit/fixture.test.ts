@@ -2,8 +2,15 @@
 // and the public-only envelope binding.
 import { bytesToHex } from '@noble/hashes/utils.js';
 import { describe, expect, it } from 'vitest';
+import { FIXTURE_VERSION } from '../../src/constants.js';
 import { envelopeAssociatedData, parseFixture, serializeFixture } from '../../src/fixture.js';
-import { PLACEHOLDER_RECIPIENT_SCRIPT, PLACEHOLDER_TXID, TEST_SEED, testFixture } from '../helpers/fixture.js';
+import {
+  PLACEHOLDER_RECIPIENT_SCRIPT,
+  PLACEHOLDER_SNAPSHOT,
+  PLACEHOLDER_TXID,
+  TEST_SEED,
+  testFixture,
+} from '../helpers/fixture.js';
 
 // Raw JSON edits model a hand-edited file, so the shape is deliberately untyped.
 type RawFixture = any;
@@ -25,8 +32,11 @@ describe('fixture JSON', () => {
   });
 
   it.each<[string, (json: RawFixture) => void]>([
-    ['an unknown version', (json) => (json.version = 2)],
+    ['an unknown version', (json) => (json.version = FIXTURE_VERSION + 1)],
     ['a short seed', (json) => (json.seed = json.seed.slice(2))],
+    ['a missing snapshot', (json) => delete json.snapshot],
+    ['an uppercase block hash', (json) => (json.snapshot.blockHash = PLACEHOLDER_SNAPSHOT.blockHash.toUpperCase())],
+    ['a negative block height', (json) => (json.snapshot.height = -1)],
     ['an uppercase txid', (json) => (json.spend.fundingOutpoint.txid = PLACEHOLDER_TXID.toUpperCase())],
     ['a negative vout', (json) => (json.spend.fundingOutpoint.vout = -1)],
     ['an amount written as a JSON number', (json) => (json.spend.paymentSats = 100_000)],
@@ -46,9 +56,11 @@ describe('envelope associated data', () => {
     expect(envelopeAssociatedData(testFixture())).toEqual(envelopeAssociatedData(testFixture()));
   });
 
-  it('binds the funding outpoint and the recipient', () => {
+  it('binds the snapshot, the funding outpoint and the recipient', () => {
+    const otherSnapshot = testFixture({ snapshot: { ...PLACEHOLDER_SNAPSHOT, height: PLACEHOLDER_SNAPSHOT.height + 1 } });
     const otherOutpoint = testFixture({ fundingOutpoint: { txid: PLACEHOLDER_TXID, vout: 1 } });
     const otherRecipient = testFixture({ recipientScript: PLACEHOLDER_RECIPIENT_SCRIPT.slice(1) });
+    expect(boundText(otherSnapshot)).not.toBe(boundText());
     expect(boundText(otherOutpoint)).not.toBe(boundText());
     expect(boundText(otherRecipient)).not.toBe(boundText());
   });

@@ -2,7 +2,7 @@
 
 ## Status
 
-All milestones are done, one commit each on `feat/v2-aadp`. `pnpm demo` passes its ten
+All milestones are done, one commit each on `feat/v2-aadp`. `pnpm demo` passes its eleven
 checks, and `pnpm test:e2e` passed twice in a row.
 
 | Milestone | Commit |
@@ -13,6 +13,7 @@ checks, and `pnpm test:e2e` passed twice in a row.
 | M3 Taproot | `feat(v2): sign a taproot key-path spend with the recovered key` |
 | M4 regtest demo | `feat(v2): run the note-to-spend demo on regtest` |
 | M5 docs | `docs(v2): document the implemented demo` |
+| Follow-up | `feat(v2): freeze the funding block snapshot in the fixture` |
 
 Deviations from the plan below:
 

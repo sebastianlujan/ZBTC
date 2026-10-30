@@ -14,6 +14,7 @@ const ARTIFACT_DIRECTORY = '.demo';
 
 function printSummary({ fixture, prepared, broadcast, checks }: DemoResult): void {
   const { txid, vout } = fixture.spend.fundingOutpoint;
+  console.log(`snapshot:         block ${fixture.snapshot.height} ${fixture.snapshot.blockHash}`);
   console.log(`funding outpoint: ${txid}:${vout}`);
   console.log(`setup attempt:    ${prepared.setupAttempt} (cofactor nonzero)`);
   console.log(`ciphertext:       ${ciphertextBytes(prepared.ciphertext)} bytes`);

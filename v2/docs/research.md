@@ -61,7 +61,8 @@ These are single-run observations of a deliberately insecure toy, not benchmarks
 | Recovery cofactor | Nonzero; its value changes with the random setup seed |
 | Spend | 1 input, 1 output, 111 vB, 1,000-sat fee (about 9 sat/vB) |
 | Demo, end to end | About 3 s, node start and stop included |
-| Checks | 10 of 10 passed; `pnpm test:e2e` passed twice in a row |
+| Snapshot | Block 102: 101 blocks mature the miner's coinbase, then one confirms the funding |
+| Checks | 11 of 11 passed; `pnpm test:e2e` passed twice in a row |
 
 ## Implementation findings
 
