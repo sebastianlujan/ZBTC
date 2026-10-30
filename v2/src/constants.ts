@@ -47,6 +47,8 @@ export const MAX_SETUP_ATTEMPTS = 8;
 export const SECRET_KEY_BYTES = 32;
 /** A txid is a double SHA-256 digest. */
 export const TXID_BYTES = 32;
+/** BIP340 public keys are the x coordinate alone; Y is implicitly even. */
+export const X_ONLY_KEY_BYTES = 32;
 
 // ---- Demo amounts (sats) ----
 /** Paid to the recipient. The toy note's exit amount is this same value. */
