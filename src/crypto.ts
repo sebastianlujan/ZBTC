@@ -30,9 +30,14 @@ import {
   KDF_INFO_SPEND,
   KDF_SALT,
   MAX_VALUE,
+  MIN_SEED_BYTES,
   NOTE_KDF_SALT,
+  NOTE_KEY_BYTES,
   NOTE_PLAINTEXT_BYTES,
+  NOTE_VALUE_BYTES,
   R,
+  SK_ENC_BYTES,
+  WIDE_SCALAR_BYTES,
 } from './constants.js';
 
 // ---- Bigint / byte helpers ----
@@ -48,6 +53,13 @@ export function bigIntToBytes(x: bigint, length = FIELD_BYTES): Uint8Array {
   const hex = x.toString(16);
   if (hex.length > length * 2) throw new RangeError(`bigint does not fit in ${length} bytes`);
   return hexToBytes(hex.padStart(length * 2, '0'));
+}
+
+const CANONICAL_DECIMAL = /^(0|[1-9][0-9]*)$/;
+
+/** True for a string of decimal digits without leading zeros (one encoding per value). */
+export function isCanonicalDecimal(s: unknown): s is string {
+  return typeof s === 'string' && CANONICAL_DECIMAL.test(s);
 }
 
 /** Canonical residue in [0, R). */
@@ -71,7 +83,7 @@ export { bytesToHex, concatBytes, hexToBytes };
 
 /** 64 uniformly random bytes reduced mod R (bias < 2^-250). */
 export function randomField(): bigint {
-  return modR(bytesToBigInt(randomBytes(64)));
+  return modR(bytesToBigInt(randomBytes(WIDE_SCALAR_BYTES)));
 }
 
 function u64ToLe(v: bigint): Uint8Array {
@@ -152,7 +164,7 @@ export interface Keys {
 
 /** X25519 public key of a 32-byte secret (RFC 7748 clamping applied by noble). */
 export function pkEncOf(skEnc: Uint8Array): Uint8Array {
-  if (skEnc.length !== 32) throw new RangeError('skEnc must be 32 bytes');
+  if (skEnc.length !== SK_ENC_BYTES) throw new RangeError(`skEnc must be ${SK_ENC_BYTES} bytes`);
   return x25519.getPublicKey(skEnc);
 }
 
@@ -162,11 +174,11 @@ export function pkEncOf(skEnc: Uint8Array): Uint8Array {
  *   sk_enc   = HKDF-SHA256(seed, salt "zbtc/v1", info "enc",   32 bytes)
  */
 export function keysFromSeed(seed: Uint8Array): Keys {
-  if (seed.length < 16) throw new RangeError('seed must be at least 16 bytes');
+  if (seed.length < MIN_SEED_BYTES) throw new RangeError(`seed must be at least ${MIN_SEED_BYTES} bytes`);
   const salt = utf8ToBytes(KDF_SALT);
-  const skSpend = modR(bytesToBigInt(hkdf(sha256, seed, salt, utf8ToBytes(KDF_INFO_SPEND), 64)));
+  const skSpend = modR(bytesToBigInt(hkdf(sha256, seed, salt, utf8ToBytes(KDF_INFO_SPEND), WIDE_SCALAR_BYTES)));
   if (skSpend === 0n) throw new Error('degenerate sk_spend');
-  const skEnc = hkdf(sha256, seed, salt, utf8ToBytes(KDF_INFO_ENC), 32);
+  const skEnc = hkdf(sha256, seed, salt, utf8ToBytes(KDF_INFO_ENC), SK_ENC_BYTES);
   return { skSpend, owner: ownerOf(skSpend), skNf: skNfOf(skSpend), skEnc, pkEnc: pkEncOf(skEnc) };
 }
 
@@ -234,7 +246,7 @@ export interface EncryptedNote {
 const ZERO_NONCE = new Uint8Array(12);
 
 function noteKey(shared: Uint8Array, epk: Uint8Array, pkEnc: Uint8Array): Uint8Array {
-  return hkdf(sha256, shared, utf8ToBytes(NOTE_KDF_SALT), concatBytes(epk, pkEnc), 32);
+  return hkdf(sha256, shared, utf8ToBytes(NOTE_KDF_SALT), concatBytes(epk, pkEnc), NOTE_KEY_BYTES);
 }
 
 /**
@@ -270,14 +282,14 @@ export function decryptNote(
   noteCm: bigint,
 ): NotePlaintext | null {
   try {
-    if (skEnc.length !== 32 || epk.length !== EPK_BYTES || ct.length !== CT_BYTES) return null;
+    if (skEnc.length !== SK_ENC_BYTES || epk.length !== EPK_BYTES || ct.length !== CT_BYTES) return null;
     if (!isField(noteCm)) return null;
     const shared = x25519.getSharedSecret(skEnc, epk);
     const k = noteKey(shared, epk, pkEncOf(skEnc));
     const pt = chacha20poly1305(k, ZERO_NONCE, bigIntToBytes(noteCm)).decrypt(ct);
     if (pt.length !== NOTE_PLAINTEXT_BYTES) return null;
-    const v = leToU64(pt.subarray(0, 8));
-    const rseed = bytesToBigInt(pt.subarray(8, NOTE_PLAINTEXT_BYTES));
+    const v = leToU64(pt.subarray(0, NOTE_VALUE_BYTES));
+    const rseed = bytesToBigInt(pt.subarray(NOTE_VALUE_BYTES, NOTE_PLAINTEXT_BYTES));
     if (!isField(rseed)) return null;
     return { v, rseed };
   } catch {

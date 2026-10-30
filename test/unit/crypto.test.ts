@@ -20,9 +20,7 @@ import {
   pkEncOf,
   randomField,
 } from '../../src/crypto.js';
-
-const alice = keysFromSeed(new Uint8Array(32).fill(0xa1));
-const bob = keysFromSeed(new Uint8Array(32).fill(0xb0));
+import { alice, bob } from '../helpers/fixtures.js';
 
 function noteFor(v: bigint, owner: bigint) {
   const rseed = randomField();

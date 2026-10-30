@@ -23,6 +23,7 @@ import {
   EPK_BYTES,
   FIELD_BYTES,
   MAGIC,
+  MAX_HEIGHT,
   N_IN,
   N_OUT,
   OFF_CM,
@@ -43,27 +44,16 @@ import {
 import { bigIntToBytes, bytesToBigInt, hBody, hexToBytes, isField } from './crypto.js';
 import { bytesToProof } from './prover.js';
 
-export {
-  BODY_BYTES,
-  CT_BYTES,
-  ENVELOPE_BYTES,
-  EPK_BYTES,
-  OFF_CM,
-  OFF_CT,
-  OFF_EPK,
-  OFF_H_ANCHOR,
-  OFF_MAGIC,
-  OFF_N_IN,
-  OFF_N_OUT,
-  OFF_NF,
-  OFF_PROOF,
-  OFF_TYPE,
-  OFF_VERSION,
-  PROOF_BYTES,
-};
+// ---- Script opcodes ----
+const OP_RETURN = 0x6a;
+/** Opcodes 0x01..0x4b push that many bytes. */
+const OP_PUSHBYTES_MAX = 0x4b;
+const OP_PUSHDATA1 = 0x4c;
+const OP_PUSHDATA2 = 0x4d;
+const OP_PUSHDATA4 = 0x4e;
 
 /** OP_RETURN (0x6a) + OP_PUSHDATA2 (0x4d) + LE16(572) = 6a 4d 3c 02. */
-export const SCRIPT_PREFIX = new Uint8Array([0x6a, 0x4d, ENVELOPE_BYTES & 0xff, ENVELOPE_BYTES >> 8]);
+export const SCRIPT_PREFIX = new Uint8Array([OP_RETURN, OP_PUSHDATA2, ENVELOPE_BYTES & 0xff, ENVELOPE_BYTES >> 8]);
 export const SCRIPT_BYTES = SCRIPT_PREFIX.length + ENVELOPE_BYTES; // 576
 
 export interface Envelope {
@@ -85,37 +75,40 @@ export type ParseResult = { ok: true; env: Envelope } | { ok: false; code: 'E_PA
 
 /** Writes the 316-byte body. Throws on any out-of-range field. */
 export function serializeBody(env: Envelope): Uint8Array {
-  if (!Number.isInteger(env.hAnchor) || env.hAnchor < 0 || env.hAnchor > 0xffffffff) {
+  if (!Number.isInteger(env.hAnchor) || env.hAnchor < 0 || env.hAnchor > MAX_HEIGHT) {
     throw new RangeError('hAnchor must be a u32');
   }
   if (env.nf.length !== N_IN || env.cm.length !== N_OUT) throw new RangeError('wrong nf/cm count');
   if (env.epk.length !== N_OUT || env.ct.length !== N_OUT) throw new RangeError('wrong epk/ct count');
 
   const out = new Uint8Array(BODY_BYTES);
-  const view = new DataView(out.buffer);
   out.set(MAGIC, OFF_MAGIC);
   out[OFF_VERSION] = VERSION;
   out[OFF_TYPE] = TYPE_TRANSFER;
-  view.setUint32(OFF_H_ANCHOR, env.hAnchor, true);
+  new DataView(out.buffer).setUint32(OFF_H_ANCHOR, env.hAnchor, true);
   out[OFF_N_IN] = N_IN;
   out[OFF_N_OUT] = N_OUT;
-  env.nf.forEach((x, i) => {
-    if (!isField(x)) throw new RangeError(`nf[${i}] >= r`);
-    out.set(bigIntToBytes(x), OFF_NF + i * FIELD_BYTES);
-  });
-  env.cm.forEach((x, i) => {
-    if (!isField(x)) throw new RangeError(`cm[${i}] >= r`);
-    out.set(bigIntToBytes(x), OFF_CM + i * FIELD_BYTES);
-  });
-  env.epk.forEach((b, i) => {
-    if (b.length !== EPK_BYTES) throw new RangeError(`epk[${i}] must be ${EPK_BYTES} bytes`);
-    out.set(b, OFF_EPK + i * EPK_BYTES);
-  });
-  env.ct.forEach((b, i) => {
-    if (b.length !== CT_BYTES) throw new RangeError(`ct[${i}] must be ${CT_BYTES} bytes`);
-    out.set(b, OFF_CT + i * CT_BYTES);
-  });
+  writeFieldElements(out, OFF_NF, env.nf, 'nf');
+  writeFieldElements(out, OFF_CM, env.cm, 'cm');
+  writeChunks(out, OFF_EPK, env.epk, EPK_BYTES, 'epk');
+  writeChunks(out, OFF_CT, env.ct, CT_BYTES, 'ct');
   return out;
+}
+
+/** Writes 32-byte big-endian field elements back to back; throws on any value >= r. */
+function writeFieldElements(out: Uint8Array, offset: number, values: readonly bigint[], name: string): void {
+  values.forEach((x, i) => {
+    if (!isField(x)) throw new RangeError(`${name}[${i}] >= r`);
+    out.set(bigIntToBytes(x), offset + i * FIELD_BYTES);
+  });
+}
+
+/** Writes fixed-size opaque chunks back to back; throws on any chunk of the wrong size. */
+function writeChunks(out: Uint8Array, offset: number, chunks: readonly Uint8Array[], size: number, name: string): void {
+  chunks.forEach((b, i) => {
+    if (b.length !== size) throw new RangeError(`${name}[${i}] must be ${size} bytes`);
+    out.set(b, offset + i * size);
+  });
 }
 
 /** Writes the full 572-byte envelope. */
@@ -178,17 +171,17 @@ function checkG2(xc0: bigint, xc1: bigint, yc0: bigint, yc1: bigint, what: strin
  * G1 \ {O}, and B in the G2 prime-order subgroup \ {O}; otherwise a reason.
  */
 export function proofPointsError(proofBytes: Uint8Array): string | null {
-  let p;
+  let proof;
   try {
-    p = bytesToProof(proofBytes); // length and coordinate < q checks
+    proof = bytesToProof(proofBytes); // length and coordinate < q checks
   } catch (e) {
     return (e as Error).message;
   }
-  const n = (s: string) => BigInt(s);
+  const { pi_a: a, pi_b: b, pi_c: c } = proof;
   return (
-    checkG1(n(p.pi_a[0]), n(p.pi_a[1]), 'pi_a') ??
-    checkG2(n(p.pi_b[0][0]), n(p.pi_b[0][1]), n(p.pi_b[1][0]), n(p.pi_b[1][1]), 'pi_b') ??
-    checkG1(n(p.pi_c[0]), n(p.pi_c[1]), 'pi_c')
+    checkG1(BigInt(a[0]), BigInt(a[1]), 'pi_a') ??
+    checkG2(BigInt(b[0][0]), BigInt(b[0][1]), BigInt(b[1][0]), BigInt(b[1][1]), 'pi_b') ??
+    checkG1(BigInt(c[0]), BigInt(c[1]), 'pi_c')
   );
 }
 
@@ -202,24 +195,13 @@ function fail(reason: string): ParseResult {
 export function parse(bytes: Uint8Array): ParseResult {
   if (!(bytes instanceof Uint8Array)) return fail('not bytes');
   if (bytes.length !== ENVELOPE_BYTES) return fail(`length ${bytes.length} != ${ENVELOPE_BYTES}`);
-  for (let i = 0; i < MAGIC.length; i++) {
-    if (bytes[OFF_MAGIC + i] !== MAGIC[i]) return fail('bad magic');
-  }
-  if (bytes[OFF_VERSION] !== VERSION) return fail(`bad version ${bytes[OFF_VERSION]}`);
-  if (bytes[OFF_TYPE] !== TYPE_TRANSFER) return fail(`bad type ${bytes[OFF_TYPE]}`);
-  if (bytes[OFF_N_IN] !== N_IN || bytes[OFF_N_OUT] !== N_OUT) {
-    return fail(`bad counts ${bytes[OFF_N_IN]}/${bytes[OFF_N_OUT]}`);
-  }
+  const headerErr = headerError(bytes);
+  if (headerErr) return fail(headerErr);
 
-  const field = (off: number, what: string): bigint | string => {
-    const x = bytesToBigInt(bytes.subarray(off, off + FIELD_BYTES));
-    return isField(x) ? x : `${what} >= r`;
-  };
-  const nf0 = field(OFF_NF, 'nf[0]');
-  const nf1 = field(OFF_NF + FIELD_BYTES, 'nf[1]');
-  const cm0 = field(OFF_CM, 'cm[0]');
-  const cm1 = field(OFF_CM + FIELD_BYTES, 'cm[1]');
-  for (const x of [nf0, nf1, cm0, cm1]) if (typeof x === 'string') return fail(x);
+  const nf = readFieldPair(bytes, OFF_NF, 'nf');
+  if (typeof nf === 'string') return fail(nf);
+  const cm = readFieldPair(bytes, OFF_CM, 'cm');
+  if (typeof cm === 'string') return fail(cm);
 
   const proofBytes = bytes.slice(OFF_PROOF, OFF_PROOF + PROOF_BYTES);
   const proofErr = proofPointsError(proofBytes);
@@ -230,13 +212,36 @@ export function parse(bytes: Uint8Array): ParseResult {
     ok: true,
     env: {
       hAnchor,
-      nf: [nf0 as bigint, nf1 as bigint],
-      cm: [cm0 as bigint, cm1 as bigint],
-      epk: [bytes.slice(OFF_EPK, OFF_EPK + EPK_BYTES), bytes.slice(OFF_EPK + EPK_BYTES, OFF_EPK + 2 * EPK_BYTES)],
-      ct: [bytes.slice(OFF_CT, OFF_CT + CT_BYTES), bytes.slice(OFF_CT + CT_BYTES, OFF_CT + 2 * CT_BYTES)],
+      nf,
+      cm,
+      epk: slicePair(bytes, OFF_EPK, EPK_BYTES),
+      ct: slicePair(bytes, OFF_CT, CT_BYTES),
       proofBytes,
     },
   };
+}
+
+/** Why magic, version, type or counts are not the only values v1 accepts, or null. */
+function headerError(bytes: Uint8Array): string | null {
+  if (!startsWithMagic(bytes.subarray(OFF_MAGIC))) return 'bad magic';
+  if (bytes[OFF_VERSION] !== VERSION) return `bad version ${bytes[OFF_VERSION]}`;
+  if (bytes[OFF_TYPE] !== TYPE_TRANSFER) return `bad type ${bytes[OFF_TYPE]}`;
+  if (bytes[OFF_N_IN] !== N_IN || bytes[OFF_N_OUT] !== N_OUT) {
+    return `bad counts ${bytes[OFF_N_IN]}/${bytes[OFF_N_OUT]}`;
+  }
+  return null;
+}
+
+/** The two field elements at `offset`, or why the first non-canonical one (>= r) is rejected. */
+function readFieldPair(bytes: Uint8Array, offset: number, name: string): [bigint, bigint] | string {
+  const read = (i: number) => bytesToBigInt(bytes.subarray(offset + i * FIELD_BYTES, offset + (i + 1) * FIELD_BYTES));
+  const pair: [bigint, bigint] = [read(0), read(1)];
+  const bad = pair.findIndex((x) => !isField(x));
+  return bad < 0 ? pair : `${name}[${bad}] >= r`;
+}
+
+function slicePair(bytes: Uint8Array, offset: number, size: number): [Uint8Array, Uint8Array] {
+  return [bytes.slice(offset, offset + size), bytes.slice(offset + size, offset + 2 * size)];
 }
 
 // ---- Extraction from a bitcoind transaction ----
@@ -260,22 +265,22 @@ export type Extracted =
  * malformed), or null if the first opcode is not a data push.
  */
 function firstPushData(script: Uint8Array): Uint8Array | null {
-  if (script.length < 2 || script[0] !== 0x6a) return null;
+  if (script.length < 2 || script[0] !== OP_RETURN) return null;
   const op = script[1];
   let len: number;
   let start: number;
-  if (op >= 0x01 && op <= 0x4b) {
+  if (op >= 0x01 && op <= OP_PUSHBYTES_MAX) {
     len = op;
     start = 2;
-  } else if (op === 0x4c) {
+  } else if (op === OP_PUSHDATA1) {
     if (script.length < 3) return null;
     len = script[2];
     start = 3;
-  } else if (op === 0x4d) {
+  } else if (op === OP_PUSHDATA2) {
     if (script.length < 4) return null;
     len = script[2] | (script[3] << 8);
     start = 4;
-  } else if (op === 0x4e) {
+  } else if (op === OP_PUSHDATA4) {
     if (script.length < 6) return null;
     len = (script[2] | (script[3] << 8) | (script[4] << 16) | (script[5] << 24)) >>> 0;
     start = 6;
@@ -301,12 +306,12 @@ export function extractEnvelope(tx: TxLike): Extracted {
   const candidates: { vout: number; script: Uint8Array }[] = [];
   tx.vout.forEach((out, idx) => {
     const hex = out.scriptPubKey?.hex;
-    if (typeof hex !== 'string' || !hex.startsWith('6a')) return;
+    if (typeof hex !== 'string' || !hex.startsWith(OP_RETURN.toString(16))) return;
     let script: Uint8Array;
     try {
       script = hexToBytes(hex);
     } catch {
-      return;
+      return; // malformed hex cannot carry an envelope
     }
     const data = firstPushData(script);
     if (data && startsWithMagic(data)) candidates.push({ vout: out.n ?? idx, script });

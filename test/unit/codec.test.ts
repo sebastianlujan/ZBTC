@@ -6,6 +6,16 @@ import {
   envelopeHBody,
   envelopeScript,
   extractEnvelope,
+  parse,
+  proofPointsError,
+  serialize,
+  serializeBody,
+  type TxLike,
+} from '../../src/codec.js';
+import {
+  BODY_BYTES,
+  CIRCUITS,
+  ENVELOPE_BYTES,
   OFF_CM,
   OFF_N_IN,
   OFF_N_OUT,
@@ -13,38 +23,18 @@ import {
   OFF_PROOF,
   OFF_TYPE,
   OFF_VERSION,
-  parse,
-  proofPointsError,
-  serialize,
-  serializeBody,
-  type TxLike,
-} from '../../src/codec.js';
-import { BODY_BYTES, CIRCUITS, ENVELOPE_BYTES, Q, R } from '../../src/constants.js';
-import { bigIntToBytes, bytesToHex, cm, hBody, keysFromSeed, randomField } from '../../src/crypto.js';
-import { bytesToProof, dummyInput, publicSignalsOf, shutdownProver, verify } from '../../src/prover.js';
-import { NoteTree } from '../../src/tree.js';
-import { craftTransfer, type CraftedTransfer } from '../helpers/craft.js';
-
-const alice = keysFromSeed(new Uint8Array(32).fill(0xa1));
-const bob = keysFromSeed(new Uint8Array(32).fill(0xb0));
+  Q,
+  R,
+} from '../../src/constants.js';
+import { bigIntToBytes, bytesToHex, hBody } from '../../src/crypto.js';
+import { bytesToProof, publicSignalsOf, shutdownProver, verify } from '../../src/prover.js';
+import { craftAliceToBob, type CraftedTransfer } from '../helpers/craft.js';
 
 let real: CraftedTransfer;
 let bytes: Uint8Array;
 
 beforeAll(async () => {
-  const tree = new NoteTree();
-  const rseed = randomField();
-  const pos = tree.append(cm(100n, alice.owner, rseed));
-  real = await craftTransfer({
-    root: tree.root(),
-    hAnchor: 123,
-    skSpend: alice.skSpend,
-    inputs: [{ v: 100n, rseed, pos, path: tree.witness(pos) }, dummyInput()],
-    outputs: [
-      { v: 30n, owner: bob.owner, pkEnc: bob.pkEnc },
-      { v: 70n, owner: alice.owner, pkEnc: alice.pkEnc },
-    ],
-  });
+  real = await craftAliceToBob({ v: 100n, pay: 30n, hAnchor: 123 });
   bytes = real.bytes;
 });
 

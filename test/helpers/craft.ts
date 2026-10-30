@@ -2,22 +2,26 @@
 // h_body, real Groth16 proof) and byte-level mutators for adversarial cases.
 import { bn254 } from '@noble/curves/bn254.js';
 import { randomBytes } from '@noble/hashes/utils.js';
+import { envelopeHBody, parse, serialize, type Envelope } from '../../src/codec.js';
 import {
+  CT_BYTES,
+  EPK_BYTES,
+  FIELD_BYTES,
+  MAX_VALUE,
   OFF_CM,
   OFF_CT,
   OFF_EPK,
   OFF_H_ANCHOR,
   OFF_NF,
   OFF_PROOF,
-  parse,
-  serialize,
-  type Envelope,
-  envelopeHBody,
-} from '../../src/codec.js';
-import { MAX_VALUE, PROOF_BYTES, R, type CircuitName } from '../../src/constants.js';
-import { bigIntToBytes, bytesToBigInt, encryptNote, randomField } from '../../src/crypto.js';
+  PROOF_BYTES,
+  R,
+  type CircuitName,
+} from '../../src/constants.js';
+import { bigIntToBytes, bytesToBigInt, cm, encryptNote, randomField } from '../../src/crypto.js';
 import {
   buildCircuitInput,
+  dummyInput,
   proofToBytes,
   prove,
   publicSignalsOf,
@@ -27,6 +31,8 @@ import {
   type SpendNote,
 } from '../../src/prover.js';
 import { buildEnvelopeTx, type BitcoinRpc, type EnvelopeTx } from '../../src/rpc.js';
+import { NoteTree } from '../../src/tree.js';
+import { alice, bob } from './fixtures.js';
 
 // ---- Real envelopes ----
 
@@ -73,7 +79,7 @@ export async function craftTransfer(o: CraftOptions): Promise<CraftedTransfer> {
   const enc = outs.map((x, k) =>
     x.v <= MAX_VALUE
       ? encryptNote({ v: x.v, rseed: x.rseed }, x.pkEnc, input.cm[k])
-      : { epk: randomBytes(32), ct: randomBytes(56) },
+      : { epk: randomBytes(EPK_BYTES), ct: randomBytes(CT_BYTES) },
   );
   const env: Envelope = {
     hAnchor: o.hAnchor,
@@ -92,6 +98,25 @@ export async function craftTransfer(o: CraftOptions): Promise<CraftedTransfer> {
   return { env, bytes: serialize(env), input, proof, publicSignals, outRseed: [outs[0].rseed, outs[1].rseed] };
 }
 
+/**
+ * Alice spends one note of `v` units, the only leaf of its tree, paying Bob
+ * `pay` and keeping the change; the second input is a dummy.
+ */
+export function craftAliceToBob(o: { v: bigint; pay: bigint; hAnchor: number; rseed?: bigint }): Promise<CraftedTransfer> {
+  const rseed = o.rseed ?? randomField();
+  const tree = new NoteTree([cm(o.v, alice.owner, rseed)]);
+  return craftTransfer({
+    root: tree.root(),
+    hAnchor: o.hAnchor,
+    skSpend: alice.skSpend,
+    inputs: [{ v: o.v, rseed, pos: 0, path: tree.witness(0) }, dummyInput()],
+    outputs: [
+      { v: o.pay, owner: bob.owner, pkEnc: bob.pkEnc },
+      { v: o.v - o.pay, owner: alice.owner, pkEnc: alice.pkEnc },
+    ],
+  });
+}
+
 // ---- Byte-level mutators (all return a copy) ----
 
 export type Region = 'anchor' | 'nf' | 'cm' | 'epk' | 'ct' | 'proof';
@@ -103,13 +128,14 @@ export type Region = 'anchor' | 'nf' | 'cm' | 'epk' | 'ct' | 'proof';
  *   epk, ct: first byte of the first element;
  *   proof: LSB of A.x (A leaves the curve -> E_PARSE, not E_PROOF).
  */
+const LAST_BYTE = FIELD_BYTES - 1;
 const DEFAULT_BYTE: Record<Region, number> = {
   anchor: OFF_H_ANCHOR,
-  nf: OFF_NF + 31,
-  cm: OFF_CM + 31,
+  nf: OFF_NF + LAST_BYTE,
+  cm: OFF_CM + LAST_BYTE,
   epk: OFF_EPK,
   ct: OFF_CT,
-  proof: OFF_PROOF + 31,
+  proof: OFF_PROOF + LAST_BYTE,
 };
 
 export function flipByte(bytes: Uint8Array, region: Region, at: number = DEFAULT_BYTE[region]): Uint8Array {
@@ -157,8 +183,8 @@ export function withProofBytes(bytes: Uint8Array, proofBytes: Uint8Array): Uint8
  * non-canonical encoding, which the codec must reject (E_PARSE).
  */
 export function aliasNf(bytes: Uint8Array, k: 0 | 1 = 0): Uint8Array {
-  const off = OFF_NF + 32 * k;
-  const nf = bytesToBigInt(bytes.subarray(off, off + 32));
+  const off = OFF_NF + FIELD_BYTES * k;
+  const nf = bytesToBigInt(bytes.subarray(off, off + FIELD_BYTES));
   const b = bytes.slice();
   b.set(bigIntToBytes(nf + R), off);
   return b;
@@ -181,14 +207,14 @@ export function randomValidProofBytes(): Uint8Array {
   const B = bn254.G2.Point.BASE.multiply(randomScalar()).toAffine();
   const C = bn254.G1.Point.BASE.multiply(randomScalar()).toAffine();
   const out = new Uint8Array(PROOF_BYTES);
-  [A.x, A.y, B.x.c0, B.x.c1, B.y.c0, B.y.c1, C.x, C.y].forEach((c, i) => out.set(bigIntToBytes(c), 32 * i));
+  [A.x, A.y, B.x.c0, B.x.c1, B.y.c0, B.y.c1, C.x, C.y].forEach((c, i) => out.set(bigIntToBytes(c), FIELD_BYTES * i));
   return out;
 }
 
 /** Coordinates < q but not curve points: must fail at parse time (E_PARSE). */
 export function offCurveProofBytes(): Uint8Array {
   const out = new Uint8Array(PROOF_BYTES);
-  for (let i = 0; i < 8; i++) out.set(bigIntToBytes(BigInt(i + 1)), 32 * i);
+  for (let i = 0; i < PROOF_BYTES / FIELD_BYTES; i++) out.set(bigIntToBytes(BigInt(i + 1)), FIELD_BYTES * i);
   return out;
 }
 

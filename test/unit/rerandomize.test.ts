@@ -1,19 +1,14 @@
 // Groth16 malleability: a re-randomized proof verifies for the same public
 // signals but has different bytes. This is why duplicates are detected only
 // by nullifier (plan, "Duplicates are detected only by nullifier").
-import { readFileSync } from 'node:fs';
 import { afterAll, describe, expect, it } from 'vitest';
 import { parse } from '../../src/codec.js';
-import { CIRCUITS } from '../../src/constants.js';
-import { bytesToHex, cm, keysFromSeed, randomField } from '../../src/crypto.js';
-import { bytesToProof, dummyInput, proofToBytes, shutdownProver, verify, type VerificationKey } from '../../src/prover.js';
-import { NoteTree } from '../../src/tree.js';
-import { craftTransfer, withProofBytes } from '../helpers/craft.js';
+import { bytesToHex } from '../../src/crypto.js';
+import { bytesToProof, loadVkey, proofToBytes, shutdownProver, verify } from '../../src/prover.js';
+import { craftAliceToBob, withProofBytes } from '../helpers/craft.js';
 import { rerandomize } from '../helpers/rerandomize.js';
 
-const alice = keysFromSeed(new Uint8Array(32).fill(0xa1));
-const bob = keysFromSeed(new Uint8Array(32).fill(0xb0));
-const vk = JSON.parse(readFileSync(CIRCUITS.main.vkey, 'utf8')) as VerificationKey;
+const vk = loadVkey();
 
 afterAll(async () => {
   await shutdownProver();
@@ -21,19 +16,7 @@ afterAll(async () => {
 
 describe('Groth16 re-randomization', () => {
   it('verifies under snarkjs for the same public signals, with different bytes', async () => {
-    const tree = new NoteTree();
-    const rseed = randomField();
-    tree.append(cm(50n, alice.owner, rseed));
-    const t = await craftTransfer({
-      root: tree.root(),
-      hAnchor: 7,
-      skSpend: alice.skSpend,
-      inputs: [{ v: 50n, rseed, pos: 0, path: tree.witness(0) }, dummyInput()],
-      outputs: [
-        { v: 20n, owner: bob.owner, pkEnc: bob.pkEnc },
-        { v: 30n, owner: alice.owner, pkEnc: alice.pkEnc },
-      ],
-    });
+    const t = await craftAliceToBob({ v: 50n, pay: 20n, hAnchor: 7 });
     expect(await verify(t.publicSignals, t.proof)).toBe(true);
 
     const p1 = rerandomize(t.proof, vk);

@@ -5,8 +5,8 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { randomBytes } from '@noble/hashes/utils.js';
-import { extractEnvelope, parse, serialize, serializeBody, type Envelope } from './codec.js';
-import { K_MIN, MAX_VALUE, W } from './constants.js';
+import { envelopeHBody, extractEnvelope, parse, serialize, type Envelope } from './codec.js';
+import { CT_BYTES, K_MIN, MAX_VALUE, N_IN, PROOF_BYTES, W } from './constants.js';
 import {
   bytesToHex,
   cm as noteCm,
@@ -14,7 +14,6 @@ import {
   decryptNote,
   encodeAddress,
   encryptNote,
-  hBody,
   hexToBytes,
   keysFromSeed,
   nf as noteNf,
@@ -22,6 +21,7 @@ import {
   randomField,
   type Address,
   type Keys,
+  type NotePlaintext,
 } from './crypto.js';
 import type { Replay } from './indexer.js';
 import {
@@ -33,11 +33,16 @@ import {
   verify,
   type SpendNote,
 } from './prover.js';
-import { buildEnvelopeTx, type BitcoinRpc, type Outpoint } from './rpc.js';
+import { buildEnvelopeTx, sendEnvelopeTx, type BitcoinRpc, type Outpoint, type RpcTx } from './rpc.js';
 import { NoteTree } from './tree.js';
 
 /** Blocks after which a lock whose carrier left the mempool is released. */
 export const LOCK_EXPIRY_BLOCKS = 10;
+
+const SEED_BYTES = 32;
+/** Owner read/write only: the file holds the spending seed. */
+const WALLET_FILE_MODE = 0o600;
+const WALLET_NAME = /^[a-z0-9][a-z0-9_-]*$/i;
 
 export type NoteState = 'candidate' | 'confirmed' | 'spendable' | 'pending-spend' | 'spent';
 
@@ -137,9 +142,193 @@ export interface TransferResult {
   spent: NoteView[];
 }
 
+/** A note of ours already in the tree, before its state is derived. */
+type TreeNote = Pick<NoteView, 'source' | 'v' | 'rseed' | 'cm' | 'txid'> & { pos: number; height: number };
+
 interface WalletFile {
   seed: string;
   locks: Lock[];
+}
+
+/**
+ * Why a lock must be released now, or null to keep it:
+ *   - any lock nf is in N -> the spend (or a copy of it) was accepted;
+ *   - the anchor left the window [max(S-1, tip+1-W), tip], or R[anchor] now
+ *     differs from the root the proof used -> needs rebuild. An anchor above
+ *     the tip (the chain got shorter in a reorg) is undetermined: the same
+ *     block may come back, so the lock is kept until the height exists again;
+ *   - the carrier is not in the mempool and the tip moved more than
+ *     LOCK_EXPIRY_BLOCKS past it.
+ */
+function lockReleaseReason(lock: Lock, replay: Replay, mempool: ReadonlySet<string>): LockRelease['reason'] | null {
+  const tip = replay.tip;
+  const anchor = lock.anchorHeight;
+  if (lock.nfs.some((n) => replay.isSpent(BigInt(n)))) return 'spent';
+  const isOutOfWindow = anchor < replay.baseHeight || tip + 1 - anchor > W;
+  const isRootChanged = anchor <= tip && replay.rootAt(anchor)?.toString() !== lock.anchorRoot;
+  if (isOutOfWindow || isRootChanged) return 'needs-rebuild';
+  if (!mempool.has(lock.txid) && tip > lock.builtAtTip + LOCK_EXPIRY_BLOCKS) return 'expired';
+  return null;
+}
+
+/** Releases the bitcoind locks on the fee coins a wallet lock reserved. */
+async function unlockFundingCoins(rpc: BitcoinRpc, lock: Lock): Promise<void> {
+  try {
+    const feeWallet = rpc.wallet(lock.feeWallet);
+    const locked = await feeWallet.listLockUnspent();
+    const ours = locked.filter((o) => lock.fundingOutpoints.some((f) => f.txid === o.txid && f.vout === o.vout));
+    if (ours.length > 0) await feeWallet.lockUnspent(true, ours);
+  } catch {
+    // Best effort: bitcoind locks are in-memory and vanish on restart, and the
+    // coins may already be spent by the carrier.
+  }
+}
+
+/** Envelope bytes carried by a mempool tx, or null if it has none or left the mempool meanwhile. */
+async function mempoolEnvelopeBytes(rpc: BitcoinRpc, txid: string): Promise<Uint8Array | null> {
+  let tx: RpcTx;
+  try {
+    tx = await rpc.getRawTransaction(txid, true);
+  } catch {
+    return null; // left the mempool meanwhile
+  }
+  const extracted = extractEnvelope(tx);
+  return extracted.kind === 'envelope' ? extracted.bytes : null;
+}
+
+function assertTransferAmount(amount: bigint): void {
+  if (typeof amount !== 'bigint') throw new TypeError('amount must be a bigint (integer units)');
+  if (amount <= 0n) throw new RangeError('amount must be > 0');
+  if (amount > MAX_VALUE) throw new RangeError('amount must be < 2^64');
+}
+
+function sumValues(notes: readonly NoteView[]): bigint {
+  return notes.reduce((s, n) => s + n.v, 0n);
+}
+
+/**
+ * Notes that can be spent at an anchor whose tree holds `sizeAtAnchor` leaves
+ * (only those have a witness there), by ascending value, then position.
+ */
+function usableNotes(notes: readonly NoteView[], sizeAtAnchor: number, ignoreLocks = false): NoteView[] {
+  return notes
+    .filter((n) => n.state === 'spendable' || (ignoreLocks && n.state === 'pending-spend'))
+    .filter((n) => (n.pos as number) < sizeAtAnchor)
+    .sort((a, b) => (a.v === b.v ? (a.pos as number) - (b.pos as number) : a.v < b.v ? -1 : 1));
+}
+
+/**
+ * Default policy: the smallest single note covering the amount, else the two
+ * largest. `usable` must be sorted as usableNotes() returns it.
+ */
+function selectInputs(
+  usable: NoteView[],
+  amount: bigint,
+  selectNotes?: TransferHooks['selectNotes'],
+): NoteView[] {
+  if (selectNotes) {
+    const chosen = selectNotes(usable);
+    if (chosen.length < 1 || chosen.length > N_IN || chosen.some((n) => !usable.includes(n))) {
+      throw new Error('selectNotes must return 1 or 2 of the usable notes');
+    }
+    return chosen;
+  }
+  const single = usable.find((n) => n.v >= amount);
+  if (single) return [single];
+  const largestTwo = usable.slice(-2);
+  if (largestTwo.length < 2 || sumValues(largestTwo) < amount) {
+    throw new Error(`insufficient funds: need ${amount}, spendable ${sumValues(usable)}`);
+  }
+  return largestTwo;
+}
+
+/**
+ * Spend inputs for the selected notes, each path checked locally against
+ * R[stateHeight], padded with zero-value dummies up to N_IN.
+ */
+function witnessedInputs(
+  replay: Replay,
+  selected: readonly NoteView[],
+  stateHeight: number,
+  root: bigint,
+): SpendNote[] {
+  const inputs: SpendNote[] = selected.map((n) => {
+    const pos = n.pos as number;
+    const merklePath = replay.witness(pos, stateHeight);
+    if (NoteTree.verifyPath(n.cm, pos, merklePath) !== root) {
+      throw new Error(`path of note ${pos} does not match R[${stateHeight}]`);
+    }
+    return { v: n.v, rseed: n.rseed, pos, path: merklePath };
+  });
+  while (inputs.length < N_IN) inputs.push(dummyInput());
+  return inputs;
+}
+
+interface NewNote extends Address {
+  v: bigint;
+  rseed: bigint;
+}
+
+/** Payment and change notes with fresh rseeds, in random order. */
+function shuffledOutputs(
+  amount: bigint,
+  dest: Address,
+  change: bigint,
+  self: Address,
+): { outputs: NewNote[]; paymentIndex: number } {
+  const outputs = [
+    { v: amount, owner: dest.owner, pkEnc: dest.pkEnc, rseed: randomField() },
+    { v: change, owner: self.owner, pkEnc: self.pkEnc, rseed: randomField() },
+  ];
+  const paymentIndex = randomBytes(1)[0] & 1;
+  if (paymentIndex === 1) outputs.reverse();
+  return { outputs, paymentIndex };
+}
+
+interface EnvelopePlan {
+  root: bigint;
+  hAnchor: number;
+  skSpend: bigint;
+  inputs: SpendNote[];
+  outputs: NewNote[];
+  /** Output whose ciphertext is replaced with random bytes (TransferHooks.corruptCiphertext). */
+  corruptOutput?: number;
+}
+
+/**
+ * Encrypts the outputs, binds the body through h_body and proves the
+ * transfer. Throws unless the proof verifies locally for the expected public
+ * signals: a wallet must never publish a proof the indexer would reject.
+ */
+async function proveEnvelope(plan: EnvelopePlan): Promise<Envelope> {
+  const input = buildCircuitInput({
+    root: plan.root,
+    hBody: 0n, // placeholder: h_body depends on the body, which depends on nf/cm
+    skSpend: plan.skSpend,
+    inputs: plan.inputs,
+    outputs: plan.outputs.map(({ v, owner, rseed }) => ({ v, owner, rseed })),
+  });
+  const enc = plan.outputs.map((o, k) => encryptNote({ v: o.v, rseed: o.rseed }, o.pkEnc, input.cm[k]));
+  if (plan.corruptOutput !== undefined) {
+    enc[plan.corruptOutput] = { ...enc[plan.corruptOutput], ct: randomBytes(CT_BYTES) };
+  }
+  const env: Envelope = {
+    hAnchor: plan.hAnchor,
+    nf: [input.nf[0], input.nf[1]],
+    cm: [input.cm[0], input.cm[1]],
+    epk: [enc[0].epk, enc[1].epk],
+    ct: [enc[0].ct, enc[1].ct],
+    proofBytes: new Uint8Array(PROOF_BYTES),
+  };
+  input.hBody = envelopeHBody(env);
+  const { proof, publicSignals } = await prove(input);
+  env.proofBytes = proofToBytes(proof);
+
+  const signals = publicSignalsOf(plan.root, input.hBody, env.nf, env.cm);
+  if (publicSignals.join() !== signals.join() || !(await verify(signals, proof))) {
+    throw new Error('local proof verification failed; refusing to publish');
+  }
+  return env;
 }
 
 export class Wallet {
@@ -166,7 +355,7 @@ export class Wallet {
   static create(dir: string, name: string): Wallet {
     const file = Wallet.pathFor(dir, name);
     if (existsSync(file)) throw new Error(`wallet ${name} already exists`);
-    const w = new Wallet(randomBytes(32), [], file);
+    const w = new Wallet(randomBytes(SEED_BYTES), [], file);
     w.save();
     return w;
   }
@@ -182,7 +371,7 @@ export class Wallet {
   }
 
   private static pathFor(dir: string, name: string): string {
-    if (!/^[a-z0-9][a-z0-9_-]*$/i.test(name)) throw new Error(`invalid wallet name: ${name}`);
+    if (!WALLET_NAME.test(name)) throw new Error(`invalid wallet name: ${name}`);
     return path.join(dir, `${name}.json`);
   }
 
@@ -190,8 +379,8 @@ export class Wallet {
     if (!this.file) return;
     mkdirSync(path.dirname(this.file), { recursive: true });
     const data: WalletFile = { seed: bytesToHex(this.seed), locks: this.locks };
-    writeFileSync(this.file, JSON.stringify(data, null, 2) + '\n', { mode: 0o600 });
-    chmodSync(this.file, 0o600);
+    writeFileSync(this.file, JSON.stringify(data, null, 2) + '\n', { mode: WALLET_FILE_MODE });
+    chmodSync(this.file, WALLET_FILE_MODE); // `mode` only applies when the file is created
   }
 
   get owner(): bigint {
@@ -208,45 +397,17 @@ export class Wallet {
     return new Set(this.locks.flatMap((l) => l.nfs));
   }
 
-  private async unlockCoins(rpc: BitcoinRpc, lock: Lock): Promise<void> {
-    // Best effort: bitcoind locks are in-memory and vanish on restart, and the
-    // coins may already be spent by the carrier.
-    try {
-      const w = rpc.wallet(lock.feeWallet);
-      const locked = await w.listLockUnspent();
-      const mine = locked.filter((o) => lock.fundingOutpoints.some((f) => f.txid === o.txid && f.vout === o.vout));
-      if (mine.length > 0) await w.lockUnspent(true, mine);
-    } catch {
-      /* ignore */
-    }
-  }
-
-  /**
-   * Releases locks:
-   *   - any lock nf is in N -> the spend (or a copy of it) was accepted;
-   *   - the anchor left the window [max(S-1, tip+1-W), tip], or R[anchor] now
-   *     differs from the root the proof used -> needs rebuild. An anchor above
-   *     the tip (the chain got shorter in a reorg) is undetermined: the same
-   *     block may come back, so the lock is kept until the height exists again;
-   *   - the carrier is not in the mempool and the tip moved > 10 blocks past it.
-   */
+  /** Releases every lock lockReleaseReason() selects and unlocks its fee coins. */
   private async maintainLocks(replay: Replay, rpc: BitcoinRpc): Promise<LockRelease[]> {
     if (this.locks.length === 0) return [];
     const mempool = new Set(await rpc.getRawMempool());
-    const tip = replay.tip;
     const released: LockRelease[] = [];
     const keep: Lock[] = [];
     for (const lock of this.locks) {
-      let reason: LockRelease['reason'] | null = null;
-      const a = lock.anchorHeight;
-      const outOfWindow = a < replay.baseHeight || tip + 1 - a > W;
-      const rootChanged = a <= tip && replay.rootAt(a)?.toString() !== lock.anchorRoot;
-      if (lock.nfs.some((n) => replay.isSpent(BigInt(n)))) reason = 'spent';
-      else if (outOfWindow || rootChanged) reason = 'needs-rebuild';
-      else if (!mempool.has(lock.txid) && tip > lock.builtAtTip + LOCK_EXPIRY_BLOCKS) reason = 'expired';
+      const reason = lockReleaseReason(lock, replay, mempool);
       if (reason) {
         released.push({ txid: lock.txid, reason });
-        await this.unlockCoins(rpc, lock);
+        await unlockFundingCoins(rpc, lock);
       } else {
         keep.push(lock);
       }
@@ -262,64 +423,75 @@ export class Wallet {
   /** Derived notes. Never throws on foreign or malformed data: it is skipped silently. */
   async view({ replay, rpc }: { replay: Replay; rpc: BitcoinRpc }): Promise<WalletView> {
     const released = await this.maintainLocks(replay, rpc);
-    const { owner, skNf, skEnc } = this.keys;
-    const tip = replay.tip;
-    const tipSize = replay.treeSizeAt(tip) ?? 0;
     const locked = this.lockedNfs();
-    const notes: NoteView[] = [];
-
-    const confirmedState = (pos: number, k: number, nf: bigint): NoteState => {
-      if (replay.isSpent(nf)) return 'spent';
-      if (locked.has(nf.toString())) return 'pending-spend';
-      if (k >= K_MIN && tipSize > pos) return 'spendable';
-      return 'confirmed';
-    };
-
-    // Genesis notes: plaintext inventory, matched by owner.
-    for (const g of replay.genesisOutputs()) {
-      if (g.owner !== owner || noteCm(g.v, owner, g.rseed) !== g.cm) continue;
-      const height = replay.baseHeight;
-      const k = tip - height + 1;
-      const nf = noteNf(skNf, g.rseed, g.pos);
-      notes.push({ state: confirmedState(g.pos, k, nf), source: 'genesis', v: g.v, rseed: g.rseed, cm: g.cm, pos: g.pos, height, confirmations: k, nf });
-    }
-
-    // Accepted transfer outputs: trial-decrypt, then re-check cm with our owner.
-    for (const o of replay.outputs()) {
-      const pt = decryptNote(skEnc, o.epk, o.ct, o.cm);
-      if (!pt || !noteMatches(pt.v, owner, pt.rseed, o.cm)) continue;
-      const k = tip - o.height + 1;
-      const nf = noteNf(skNf, pt.rseed, o.pos);
-      notes.push({ state: confirmedState(o.pos, k, nf), source: 'transfer', v: pt.v, rseed: pt.rseed, cm: o.cm, pos: o.pos, height: o.height, confirmations: k, nf, txid: o.txid });
-    }
-
-    // Mempool candidates: only envelopes that would be valid in the next block.
-    for (const txid of await rpc.getRawMempool()) {
-      let tx;
-      try {
-        tx = await rpc.getRawTransaction(txid, true);
-      } catch {
-        continue; // left the mempool meanwhile
-      }
-      const ex = extractEnvelope(tx);
-      if (ex.kind !== 'envelope') continue;
-      const parsed = parse(ex.bytes);
-      if (!parsed.ok) continue;
-      const env = parsed.env;
-      let mineOut = false;
-      const outs: NoteView[] = [];
-      for (let k = 0; k < env.cm.length; k++) {
-        const pt = decryptNote(skEnc, env.epk[k], env.ct[k], env.cm[k]);
-        if (!pt || !noteMatches(pt.v, owner, pt.rseed, env.cm[k])) continue;
-        mineOut = true;
-        outs.push({ state: 'candidate', source: 'mempool', v: pt.v, rseed: pt.rseed, cm: env.cm[k], txid });
-      }
-      if (!mineOut) continue;
-      if (!(await replay.validate(ex.bytes, tip + 1)).ok) continue;
-      notes.push(...outs);
-    }
-
+    const notes = [...this.genesisNotes(replay), ...this.transferNotes(replay)].map((n) =>
+      this.withState(n, replay, locked),
+    );
+    notes.push(...(await this.mempoolCandidates(replay, rpc)));
     return { notes, released };
+  }
+
+  /** Genesis notes: plaintext inventory, matched by owner. */
+  private genesisNotes(replay: Replay): TreeNote[] {
+    const { owner } = this.keys;
+    return replay
+      .genesisOutputs()
+      .filter((g) => g.owner === owner && noteCm(g.v, owner, g.rseed) === g.cm)
+      .map((g) => ({ source: 'genesis', v: g.v, rseed: g.rseed, cm: g.cm, pos: g.pos, height: replay.baseHeight }));
+  }
+
+  /** Accepted transfer outputs we can decrypt. */
+  private transferNotes(replay: Replay): TreeNote[] {
+    const notes: TreeNote[] = [];
+    for (const o of replay.outputs()) {
+      const pt = this.decryptOwn(o.epk, o.ct, o.cm);
+      if (!pt) continue;
+      notes.push({ source: 'transfer', v: pt.v, rseed: pt.rseed, cm: o.cm, pos: o.pos, height: o.height, txid: o.txid });
+    }
+    return notes;
+  }
+
+  /** Adds the nullifier, confirmations and state of a note in the tree, as of the replay tip. */
+  private withState(note: TreeNote, replay: Replay, locked: ReadonlySet<string>): NoteView {
+    const confirmations = replay.tip - note.height + 1;
+    const nf = noteNf(this.keys.skNf, note.rseed, note.pos);
+    const isInTipTree = (replay.treeSizeAt(replay.tip) ?? 0) > note.pos;
+    let state: NoteState = 'confirmed';
+    if (replay.isSpent(nf)) state = 'spent';
+    else if (locked.has(nf.toString())) state = 'pending-spend';
+    else if (confirmations >= K_MIN && isInTipTree) state = 'spendable';
+    return { state, ...note, confirmations, nf };
+  }
+
+  /** Mempool candidates: only envelopes that would be valid in the next block. */
+  private async mempoolCandidates(replay: Replay, rpc: BitcoinRpc): Promise<NoteView[]> {
+    const candidates: NoteView[] = [];
+    for (const txid of await rpc.getRawMempool()) {
+      const bytes = await mempoolEnvelopeBytes(rpc, txid);
+      if (!bytes) continue;
+      const parsed = parse(bytes);
+      if (!parsed.ok) continue;
+      const mine = this.ownOutputs(parsed.env, txid);
+      // Validation verifies a proof: only pay for it when the envelope pays us.
+      if (mine.length === 0 || !(await replay.validate(bytes, replay.tip + 1)).ok) continue;
+      candidates.push(...mine);
+    }
+    return candidates;
+  }
+
+  private ownOutputs(env: Envelope, txid: string): NoteView[] {
+    const outputs: NoteView[] = [];
+    env.cm.forEach((cm, k) => {
+      const pt = this.decryptOwn(env.epk[k], env.ct[k], cm);
+      if (pt) outputs.push({ state: 'candidate', source: 'mempool', v: pt.v, rseed: pt.rseed, cm, txid });
+    });
+    return outputs;
+  }
+
+  /** Trial decryption, then the cm re-check: a plaintext is ours only if it opens cm with our owner. */
+  private decryptOwn(epk: Uint8Array, ct: Uint8Array, cm: bigint): NotePlaintext | null {
+    const pt = decryptNote(this.keys.skEnc, epk, ct, cm);
+    return pt && noteMatches(pt.v, this.keys.owner, pt.rseed, cm) ? pt : null;
   }
 
   async balance(args: { replay: Replay; rpc: BitcoinRpc }): Promise<Balance> {
@@ -327,8 +499,7 @@ export class Wallet {
   }
 
   static balanceOf(notes: readonly NoteView[]): Balance {
-    const sum = (states: NoteState[]) =>
-      notes.filter((n) => states.includes(n.state)).reduce((s, n) => s + n.v, 0n);
+    const sum = (states: NoteState[]) => sumValues(notes.filter((n) => states.includes(n.state)));
     const spendable = sum(['spendable']);
     const pending = sum(['confirmed', 'pending-spend']);
     return { spendable, pending, candidate: sum(['candidate']), total: spendable + pending };
@@ -343,9 +514,7 @@ export class Wallet {
   async buildTransfer(req: TransferRequest): Promise<TransferResult> {
     const { replay, rpc, amount, feeWallet } = req;
     const hooks = req.hooks ?? {};
-    if (typeof amount !== 'bigint') throw new TypeError('amount must be a bigint (integer units)');
-    if (amount <= 0n) throw new RangeError('amount must be > 0');
-    if (amount > MAX_VALUE) throw new RangeError('amount must be < 2^64');
+    assertTransferAmount(amount);
     const dest = typeof req.to === 'string' ? decodeAddress(req.to) : req.to;
 
     // Anchor: the tip by default. The proof uses the tree state at stateHeight.
@@ -353,76 +522,33 @@ export class Wallet {
     const stateHeight = Math.min(Math.max(anchorHeight, replay.baseHeight), replay.tip);
     const sizeAtAnchor = replay.treeSizeAt(stateHeight) ?? 0;
 
-    // 1. Select one note covering the amount (smallest such), else the two largest.
-    //    Only notes that exist in the tree at the anchor have a witness there.
+    // 1. Select the input notes.
     const { notes } = await this.view({ replay, rpc });
-    const usable = notes
-      .filter((n) => n.state === 'spendable' || (hooks.ignoreLocks && n.state === 'pending-spend'))
-      .filter((n) => (n.pos as number) < sizeAtAnchor)
-      .sort((a, b) => (a.v === b.v ? (a.pos as number) - (b.pos as number) : a.v < b.v ? -1 : 1));
-    let selected = hooks.selectNotes ? hooks.selectNotes(usable) : usable.filter((n) => n.v >= amount).slice(0, 1);
-    if (hooks.selectNotes && (selected.length < 1 || selected.length > 2 || selected.some((n) => !usable.includes(n)))) {
-      throw new Error('selectNotes must return 1 or 2 of the usable notes');
-    }
-    if (selected.length === 0) {
-      const top2 = usable.slice(-2);
-      if (top2.length < 2 || top2[0].v + top2[1].v < amount) {
-        const have = usable.reduce((s, n) => s + n.v, 0n);
-        throw new Error(`insufficient funds: need ${amount}, spendable ${have}`);
-      }
-      selected = top2;
-    }
-    const totalIn = selected.reduce((s, n) => s + n.v, 0n);
-    const change = totalIn - amount;
+    const usable = usableNotes(notes, sizeAtAnchor, hooks.ignoreLocks);
+    const selected = selectInputs(usable, amount, hooks.selectNotes);
+    const change = sumValues(selected) - amount;
     if (change > MAX_VALUE) throw new RangeError('change does not fit in 64 bits');
 
     // 2. Witnesses, checked locally against R[stateHeight].
     const root = replay.rootAt(stateHeight);
     if (root === undefined) throw new Error(`no tree state at anchor ${stateHeight}`);
-    const inputs: SpendNote[] = selected.map((n) => {
-      const pos = n.pos as number;
-      const p = replay.witness(pos, stateHeight);
-      if (NoteTree.verifyPath(n.cm, pos, p) !== root) throw new Error(`path of note ${pos} does not match R[${stateHeight}]`);
-      return { v: n.v, rseed: n.rseed, pos, path: p };
-    });
-    while (inputs.length < 2) inputs.push(dummyInput());
+    const inputs = witnessedInputs(replay, selected, stateHeight, root);
 
-    // 3. Outputs: payment + change, shuffled, fresh rseeds.
-    const outs = [
-      { v: amount, owner: dest.owner, pkEnc: dest.pkEnc, rseed: randomField(), payment: true },
-      { v: change, owner: this.keys.owner, pkEnc: this.keys.pkEnc, rseed: randomField(), payment: false },
-    ];
-    if (randomBytes(1)[0] & 1) outs.reverse();
-    const paymentIndex = outs.findIndex((o) => o.payment);
+    // 3. Outputs: payment + change.
+    const { outputs: outs, paymentIndex } = shuffledOutputs(amount, dest, change, this.keys);
 
-    // 4. Circuit input, encryption, body, h_body, proof.
-    const input = buildCircuitInput({
+    // 4. Encryption, body, h_body, proof (verified locally).
+    const env = await proveEnvelope({
       root,
-      hBody: 0n,
+      hAnchor: anchorHeight,
       skSpend: this.keys.skSpend,
       inputs,
-      outputs: outs.map(({ v, owner, rseed }) => ({ v, owner, rseed })),
+      outputs: outs,
+      corruptOutput: hooks.corruptCiphertext ? paymentIndex : undefined,
     });
-    const enc = outs.map((o, k) => encryptNote({ v: o.v, rseed: o.rseed }, o.pkEnc, input.cm[k]));
-    if (hooks.corruptCiphertext) enc[paymentIndex] = { ...enc[paymentIndex], ct: randomBytes(56) };
-    const env: Envelope = {
-      hAnchor: anchorHeight,
-      nf: [input.nf[0], input.nf[1]],
-      cm: [input.cm[0], input.cm[1]],
-      epk: [enc[0].epk, enc[1].epk],
-      ct: [enc[0].ct, enc[1].ct],
-      proofBytes: new Uint8Array(256),
-    };
-    input.hBody = hBody(serializeBody(env));
-    const { proof, publicSignals } = await prove(input);
-    env.proofBytes = proofToBytes(proof);
     const envelope = serialize(env);
 
-    // 5. Verify locally; refuse to publish anything the indexer would reject.
-    const signals = publicSignalsOf(root, input.hBody, env.nf, env.cm);
-    if (publicSignals.join() !== signals.join() || !(await verify(signals, proof))) {
-      throw new Error('local proof verification failed; refusing to publish');
-    }
+    // 5. Refuse to publish anything the indexer would reject.
     if (hooks.anchorOverride === undefined) {
       const check = await replay.validate(envelope, replay.tip + 1);
       if (!check.ok) throw new Error(`local validation failed (${check.code}: ${check.reason}); refusing to publish`);
@@ -430,10 +556,7 @@ export class Wallet {
 
     // 6. Carrier, broadcast, lock.
     const carrier = await buildEnvelopeTx(rpc, feeWallet, envelope);
-    if (!hooks.noPublish) {
-      const sent = await rpc.sendRawTransaction(carrier.hex);
-      if (sent !== carrier.txid) throw new Error(`sendrawtransaction returned ${sent}`);
-    }
+    if (!hooks.noPublish) await sendEnvelopeTx(rpc, carrier);
     this.locks.push({
       nfs: env.nf.map((n) => n.toString()),
       txid: carrier.txid,

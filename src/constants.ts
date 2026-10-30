@@ -40,8 +40,10 @@ export const Q = 218882428718392752222464057452572750886963111572978236626890378
 export const FIELD_BYTES = 32;
 export const PROOF_BYTES = 256;
 export const EPK_BYTES = 32;
-/** AEAD plaintext: v (8 bytes) || rseed (32 bytes). Exact encoding is fixed in the codec (M2). */
-export const NOTE_PLAINTEXT_BYTES = 40;
+/** v as u64 LE: the first part of the AEAD plaintext. */
+export const NOTE_VALUE_BYTES = 8;
+/** AEAD plaintext: v (u64 LE) || rseed (32 B BE). */
+export const NOTE_PLAINTEXT_BYTES = NOTE_VALUE_BYTES + FIELD_BYTES; // 40
 export const AEAD_TAG_BYTES = 16;
 export const CT_BYTES = NOTE_PLAINTEXT_BYTES + AEAD_TAG_BYTES; // 56
 
@@ -49,6 +51,8 @@ export const OFF_MAGIC = 0;
 export const OFF_VERSION = 4;
 export const OFF_TYPE = 5;
 export const OFF_H_ANCHOR = 6; // u32 LE
+/** h_anchor is a u32, so no height the protocol refers to may exceed this. */
+export const MAX_HEIGHT = 0xffffffff;
 export const OFF_N_IN = 10;
 export const OFF_N_OUT = 11;
 export const OFF_NF = 12; // N_IN * 32
@@ -64,10 +68,21 @@ export const ENVELOPE_BYTES = OFF_PROOF + PROOF_BYTES; // 572
 export const H_BODY_DOMAIN = 'zbtc/v1/body';
 export const H_BODY_BYTES = 31;
 
+/** Domain tag of the replay state digest that independent clients compare. */
+export const STATE_DIGEST_DOMAIN = 'zbtc/v1/state';
+
 // ---- Key derivation ----
 export const KDF_SALT = 'zbtc/v1';
 export const KDF_INFO_SPEND = 'spend';
 export const KDF_INFO_ENC = 'enc';
+/** Seeds shorter than this are refused. */
+export const MIN_SEED_BYTES = 16;
+/** Bytes reduced mod r to derive a scalar: 64 keep the bias below 2^-250. */
+export const WIDE_SCALAR_BYTES = 64;
+/** X25519 secret key (sk_enc). */
+export const SK_ENC_BYTES = 32;
+/** ChaCha20-Poly1305 key derived per note. */
+export const NOTE_KEY_BYTES = 32;
 /** HKDF salt for the per-note AEAD key: k = HKDF(shared, salt, epk || pkEnc, 32). */
 export const NOTE_KDF_SALT = 'zbtc/v1/note';
 

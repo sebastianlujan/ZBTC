@@ -1,12 +1,11 @@
 // Indexer replay logic on synthetic blocks (no bitcoind). Envelopes are real
 // (craftTransfer proves them), blocks and txids are fake but well-formed.
-import { readFileSync } from 'node:fs';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { utf8ToBytes } from '@noble/hashes/utils.js';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { envelopeScript, OFF_CT, OFF_NF, OFF_VERSION } from '../../src/codec.js';
-import { CIRCUITS, R } from '../../src/constants.js';
-import { bytesToHex, keysFromSeed, randomField } from '../../src/crypto.js';
+import { envelopeScript } from '../../src/codec.js';
+import { OFF_CT, OFF_NF, OFF_VERSION, R } from '../../src/constants.js';
+import { bytesToHex, randomField } from '../../src/crypto.js';
 import {
   ChainMismatchError,
   loadGenesis,
@@ -14,14 +13,11 @@ import {
   Replay,
   type BlockLike,
   type GenesisNote,
-  type ReplayOptions,
 } from '../../src/indexer.js';
-import { dummyInput, shutdownProver, type VerificationKey } from '../../src/prover.js';
+import { dummyInput, shutdownProver } from '../../src/prover.js';
 import { NoteTree } from '../../src/tree.js';
 import { craftTransfer } from '../helpers/craft.js';
-
-const alice = keysFromSeed(new Uint8Array(32).fill(0xa1));
-const bob = keysFromSeed(new Uint8Array(32).fill(0xb0));
+import { alice, bob, replayOptionsFor } from '../helpers/fixtures.js';
 
 // ---- Genesis: S = 10, notes G1..G4 (Alice) + G5 (Bob) at positions 0..4 ----
 const S = 10;
@@ -33,13 +29,7 @@ const G: GenesisNote[] = [
   { v: 20n, owner: bob.owner, rseed: randomField() },
 ];
 const genesisText = makeGenesis(G, S);
-const vkeyBytes = new Uint8Array(readFileSync(CIRCUITS.main.vkey));
-const opts: ReplayOptions = {
-  genesis: loadGenesis(genesisText),
-  genesisBytes: utf8ToBytes(genesisText),
-  vkey: JSON.parse(new TextDecoder().decode(vkeyBytes)) as VerificationKey,
-  vkeyBytes,
-};
+const opts = replayOptionsFor(genesisText);
 const genesisTree = new NoteTree(opts.genesis.notes.map((n) => n.cm));
 const R0 = genesisTree.root();
 

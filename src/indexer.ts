@@ -9,10 +9,20 @@
 import { readFileSync } from 'node:fs';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { extractEnvelope, parse, type Envelope, type Extracted, type TxLike } from './codec.js';
-import { BODY_BYTES, CIRCUITS, DEPTH, K_MIN, MAX_LEAVES, MAX_VALUE, W } from './constants.js';
-import { bigIntToBytes, bytesToHex, cm, hBody, hexToBytes, isField } from './crypto.js';
+import {
+  BODY_BYTES,
+  CIRCUITS,
+  DEPTH,
+  K_MIN,
+  MAX_HEIGHT,
+  MAX_LEAVES,
+  MAX_VALUE,
+  STATE_DIGEST_DOMAIN,
+  W,
+} from './constants.js';
+import { bigIntToBytes, bytesToHex, cm, hBody, hexToBytes, isCanonicalDecimal, isField } from './crypto.js';
 import { bytesToProof, publicSignalsOf, verifyWithVkey, type VerificationKey } from './prover.js';
-import { RpcError, type BitcoinRpc } from './rpc.js';
+import { RPC_INVALID_ADDRESS_OR_KEY, RPC_INVALID_PARAMETER, RpcError, type BitcoinRpc } from './rpc.js';
 import { NoteTree } from './tree.js';
 
 // ---- Genesis inventory ----
@@ -32,15 +42,25 @@ export interface Genesis {
   notes: (GenesisNote & { cm: bigint })[];
 }
 
-const DEC = /^(0|[1-9][0-9]*)$/;
+function sumValues(notes: readonly GenesisNote[]): bigint {
+  return notes.reduce((s, n) => s + n.v, 0n);
+}
 
 function decField(x: unknown, what: string): bigint {
-  if (typeof x !== 'string' || !DEC.test(x)) throw new Error(`genesis: ${what} must be a canonical decimal string`);
+  if (!isCanonicalDecimal(x)) throw new Error(`genesis: ${what} must be a canonical decimal string`);
   return BigInt(x);
 }
 
-export function cmOfGenesisNote(n: GenesisNote): bigint {
-  return cm(n.v, n.owner, n.rseed);
+/** Note `i` of the inventory: v < 2^64, owner and rseed < r; computes its cm. */
+function parseGenesisNote(raw: unknown, i: number): Genesis['notes'][number] {
+  const n = raw as Record<string, unknown>;
+  const v = decField(n?.v, `notes[${i}].v`);
+  const owner = decField(n?.owner, `notes[${i}].owner`);
+  const rseed = decField(n?.rseed, `notes[${i}].rseed`);
+  if (v > MAX_VALUE) throw new Error(`genesis: notes[${i}].v >= 2^64`);
+  if (!isField(owner)) throw new Error(`genesis: notes[${i}].owner >= r`);
+  if (!isField(rseed)) throw new Error(`genesis: notes[${i}].rseed >= r`);
+  return { v, owner, rseed, cm: cm(v, owner, rseed) };
 }
 
 /**
@@ -53,31 +73,21 @@ export function loadGenesis(json: string | unknown): Genesis {
   if (!g || typeof g !== 'object') throw new Error('genesis: not an object');
   if (g.version !== 1) throw new Error('genesis: version must be 1');
   const S = g.startHeight;
-  if (typeof S !== 'number' || !Number.isInteger(S) || S < 1 || S > 0xffffffff) {
+  if (typeof S !== 'number' || !Number.isInteger(S) || S < 1 || S > MAX_HEIGHT) {
     throw new Error('genesis: startHeight must be an integer >= 1');
   }
   const totalSupply = decField(g.totalSupply, 'totalSupply');
   if (!Array.isArray(g.notes)) throw new Error('genesis: notes must be an array');
   if (g.notes.length > MAX_LEAVES) throw new Error('genesis: too many notes');
-  let sum = 0n;
-  const notes = g.notes.map((raw: unknown, i: number) => {
-    const n = raw as Record<string, unknown>;
-    const v = decField(n?.v, `notes[${i}].v`);
-    const owner = decField(n?.owner, `notes[${i}].owner`);
-    const rseed = decField(n?.rseed, `notes[${i}].rseed`);
-    if (v > MAX_VALUE) throw new Error(`genesis: notes[${i}].v >= 2^64`);
-    if (!isField(owner)) throw new Error(`genesis: notes[${i}].owner >= r`);
-    if (!isField(rseed)) throw new Error(`genesis: notes[${i}].rseed >= r`);
-    sum += v;
-    return { v, owner, rseed, cm: cmOfGenesisNote({ v, owner, rseed }) };
-  });
+  const notes = g.notes.map(parseGenesisNote);
+  const sum = sumValues(notes);
   if (sum !== totalSupply) throw new Error(`genesis: sum(v) = ${sum} != totalSupply = ${totalSupply}`);
   return { version: 1, startHeight: S, totalSupply, notes };
 }
 
 /** Serializes a genesis inventory (totalSupply = sum of v). */
 export function makeGenesis(entries: readonly GenesisNote[], startHeight: number): string {
-  const totalSupply = entries.reduce((s, e) => s + e.v, 0n);
+  const totalSupply = sumValues(entries);
   const doc = {
     version: 1,
     startHeight,
@@ -93,10 +103,17 @@ export function makeGenesis(entries: readonly GenesisNote[], startHeight: number
 
 export type RejectCode = 'E_MULTI' | 'E_PARSE' | 'E_ANCHOR' | 'E_NF_DUP' | 'E_NF_SPENT' | 'E_PROOF' | 'E_TREE_FULL';
 
+type ValidEnvelope = { ok: true; env: Envelope; hBody: bigint };
+type Rejection = { ok: false; code: RejectCode; reason: string };
+
 export type Validation =
-  | { ok: true; env: Envelope; hBody: bigint }
-  | { ok: false; code: RejectCode; reason: string }
+  | ValidEnvelope
+  | Rejection
   | { ok: false; code: 'NONE'; reason: string };
+
+function reject(code: RejectCode, reason: string): Rejection {
+  return { ok: false, code, reason };
+}
 
 export interface AcceptedOutput {
   pos: number;
@@ -131,12 +148,14 @@ export interface ScannableOutput extends AcceptedOutput {
   index: number;
 }
 
+type BlockTx = TxLike & { txid: string };
+
 /** The subset of `getblock <hash> 2` that replay reads. */
 export interface BlockLike {
   hash: string;
   height?: number;
   previousblockhash?: string;
-  tx: (TxLike & { txid: string })[];
+  tx: BlockTx[];
 }
 
 interface UndoRecord {
@@ -177,8 +196,11 @@ export class ChainMismatchError extends Error {
 
 /** Reads genesis.json and (by default) the production vkey from disk. */
 export function replayOptionsFromFiles(genesisPath: string, vkeyPath: string = CIRCUITS.main.vkey): ReplayOptions {
-  const genesisBytes = new Uint8Array(readFileSync(genesisPath));
-  const vkeyBytes = new Uint8Array(readFileSync(vkeyPath));
+  return replayOptionsFromBytes(new Uint8Array(readFileSync(genesisPath)), new Uint8Array(readFileSync(vkeyPath)));
+}
+
+/** Parses the exact genesis.json and vkey.json bytes (both part of the profile hash). */
+export function replayOptionsFromBytes(genesisBytes: Uint8Array, vkeyBytes: Uint8Array): ReplayOptions {
   return {
     genesis: loadGenesis(new TextDecoder().decode(genesisBytes)),
     genesisBytes,
@@ -187,14 +209,28 @@ export function replayOptionsFromFiles(genesisPath: string, vkeyPath: string = C
   };
 }
 
+/** Block `height` of the node's active chain, or null if that chain shrank or switched under us. */
+async function fetchActiveBlock(rpc: BitcoinRpc, height: number): Promise<BlockLike | null> {
+  try {
+    return await rpc.getBlock(await rpc.getBlockHash(height), 2);
+  } catch (e) {
+    // Height out of range or block not found. Anything else (e.g. pruned data) is fatal.
+    if (e instanceof RpcError && (e.code === RPC_INVALID_PARAMETER || e.code === RPC_INVALID_ADDRESS_OR_KEY)) {
+      return null;
+    }
+    throw e;
+  }
+}
+
 function u32le(x: number): Uint8Array {
   const b = new Uint8Array(4);
   new DataView(b.buffer).setUint32(0, x, true);
   return b;
 }
 
-const ZERO32 = new Uint8Array(32);
-const STATE_DOMAIN = new TextEncoder().encode('zbtc/v1/state');
+/** tipHash at S-1, where there is no block. */
+const GENESIS_TIP_HASH = new Uint8Array(32);
+const STATE_DOMAIN = new TextEncoder().encode(STATE_DIGEST_DOMAIN);
 
 export class Replay {
   readonly genesis: Genesis;
@@ -255,9 +291,6 @@ export class Replay {
   get rejected(): readonly RejectedEntry[] {
     return this.rejectedList;
   }
-  blockHashAt(h: number): string | undefined {
-    return this.hashes.get(h);
-  }
   /** R[h], defined for S-1 <= h <= tip. */
   rootAt(h: number): bigint | undefined {
     return this.roots.get(h);
@@ -293,51 +326,64 @@ export class Replay {
    * against the current state, in the plan's order:
    *   0 extract (E_MULTI / E_PARSE)  1 parse (E_PARSE)  2 h_body
    *   3 max(S-1, H-W) <= h_anchor <= H-1 (E_ANCHOR)
-   *   4 nf0 != nf1 (E_NF_DUP), nf not in N (E_NF_SPENT)
+   *   4 nf0 != nf1 (E_NF_DUP), nf not in N (E_NF_SPENT), room for 2 leaves (E_TREE_FULL)
    *   5 Groth16 verify on [R[h_anchor], h_body, nf0, nf1, cm0, cm1] (E_PROOF)
    * Steps 0-4 are cheap and run before the proof check, so a replayed or
    * self-conflicting envelope never costs a pairing.
    */
   async validate(input: Uint8Array | Extracted, H: number): Promise<Validation> {
     // 0. extract
-    let bytes: Uint8Array;
-    if (input instanceof Uint8Array) {
-      bytes = input;
-    } else if (input.kind === 'none') {
-      return { ok: false, code: 'NONE', reason: 'no envelope' };
-    } else if (input.kind === 'reject') {
-      return { ok: false, code: input.code, reason: `carrier rejected (${input.code})` };
-    } else {
-      bytes = input.bytes;
+    if (!(input instanceof Uint8Array)) {
+      if (input.kind === 'none') return { ok: false, code: 'NONE', reason: 'no envelope' };
+      if (input.kind === 'reject') return reject(input.code, `carrier rejected (${input.code})`);
     }
+    const bytes = input instanceof Uint8Array ? input : input.bytes;
     // 1. canonical parse
     const parsed = parse(bytes);
-    if (!parsed.ok) return { ok: false, code: 'E_PARSE', reason: parsed.reason };
+    if (!parsed.ok) return reject('E_PARSE', parsed.reason);
     const env = parsed.env;
     // 2. h_body
-    const hb = hBody(bytes.subarray(0, BODY_BYTES));
-    // 3. anchor window; R[H] does not exist yet, so an anchor at H is impossible
+    const bodyHash = hBody(bytes.subarray(0, BODY_BYTES));
+    // 3. anchor window
+    const anchor = this.anchorRoot(env.hAnchor, H);
+    if (!anchor.ok) return anchor;
+    // 4. nullifiers, tree capacity
+    const conflict = this.stateConflict(env);
+    if (conflict) return conflict;
+    // 5. proof
+    const isValidProof = await this.verifyProof(env, anchor.root, bodyHash);
+    if (!isValidProof) return reject('E_PROOF', 'groth16 verification failed');
+    return { ok: true, env, hBody: bodyHash };
+  }
+
+  /** Step 3. R[H] does not exist yet, so an anchor at H is impossible. */
+  private anchorRoot(hAnchor: number, H: number): { ok: true; root: bigint } | Rejection {
     const lo = Math.max(this.baseHeight, H - W);
     const hi = H - 1;
-    if (env.hAnchor < lo || env.hAnchor > hi) {
-      return { ok: false, code: 'E_ANCHOR', reason: `h_anchor ${env.hAnchor} not in [${lo}, ${hi}]` };
-    }
-    const rAnchor = this.roots.get(env.hAnchor);
-    if (rAnchor === undefined) return { ok: false, code: 'E_ANCHOR', reason: `no root at ${env.hAnchor}` };
-    // 4. nullifiers (only duplicates rule: by nullifier, never by txid or proof bytes)
-    if (env.nf[0] === env.nf[1]) return { ok: false, code: 'E_NF_DUP', reason: 'nf0 == nf1' };
+    if (hAnchor < lo || hAnchor > hi) return reject('E_ANCHOR', `h_anchor ${hAnchor} not in [${lo}, ${hi}]`);
+    const root = this.roots.get(hAnchor);
+    if (root === undefined) return reject('E_ANCHOR', `no root at ${hAnchor}`);
+    return { ok: true, root };
+  }
+
+  /**
+   * Step 4. The only duplicate rule is by nullifier, never by txid or proof
+   * bytes (Groth16 proofs are malleable).
+   */
+  private stateConflict(env: Envelope): Rejection | null {
+    if (env.nf[0] === env.nf[1]) return reject('E_NF_DUP', 'nf0 == nf1');
     if (this.nullifiers.has(env.nf[0]) || this.nullifiers.has(env.nf[1])) {
-      return { ok: false, code: 'E_NF_SPENT', reason: 'nullifier already spent' };
+      return reject('E_NF_SPENT', 'nullifier already spent');
     }
-    if (this.tree.size + env.cm.length > MAX_LEAVES) {
-      return { ok: false, code: 'E_TREE_FULL', reason: 'note tree is full' };
-    }
-    // 5. proof
+    if (this.tree.size + env.cm.length > MAX_LEAVES) return reject('E_TREE_FULL', 'note tree is full');
+    return null;
+  }
+
+  /** Step 5. */
+  private verifyProof(env: Envelope, anchorRoot: bigint, bodyHash: bigint): Promise<boolean> {
     this.verifyCalls++;
-    const signals = publicSignalsOf(rAnchor, hb, env.nf, env.cm);
-    const ok = await verifyWithVkey(this.opts.vkey, signals, bytesToProof(env.proofBytes));
-    if (!ok) return { ok: false, code: 'E_PROOF', reason: 'groth16 verification failed' };
-    return { ok: true, env, hBody: hb };
+    const signals = publicSignalsOf(anchorRoot, bodyHash, env.nf, env.cm);
+    return verifyWithVkey(this.opts.vkey, signals, bytesToProof(env.proofBytes));
   }
 
   // ---- Block application ----
@@ -353,6 +399,24 @@ export class Replay {
     // tipHeight only advances after the awaits below, so a concurrent call
     // would pass the height check and apply the same block twice.
     if (this.applying) throw new Error('applyBlock is not reentrant');
+    this.assertExtendsTip(H, block);
+
+    const rec: UndoRecord = { treeSizeBefore: this.tree.size, nfs: [], accepted: 0, rejected: 0 };
+    this.applying = true;
+    try {
+      for (let txIndex = 0; txIndex < block.tx.length; txIndex++) {
+        await this.applyTransaction(H, txIndex, block.tx[txIndex], rec);
+      }
+    } catch (e) {
+      this.undoRecord(rec);
+      throw e;
+    } finally {
+      this.applying = false;
+    }
+    this.commitBlock(H, block.hash, rec);
+  }
+
+  private assertExtendsTip(H: number, block: BlockLike): void {
     if (H !== this.tipHeight + 1) throw new Error(`applyBlock(${H}) but tip is ${this.tipHeight}`);
     if (block.height !== undefined && block.height !== H) {
       throw new ChainMismatchError(`block height ${block.height} != ${H}`);
@@ -361,52 +425,50 @@ export class Replay {
     if (H > this.genesis.startHeight && block.previousblockhash !== this.hashes.get(H - 1)) {
       throw new ChainMismatchError(`block ${H} does not extend ${this.hashes.get(H - 1)}`);
     }
+  }
 
-    const rec: UndoRecord = { treeSizeBefore: this.tree.size, nfs: [], accepted: 0, rejected: 0 };
-    this.applying = true;
-    try {
-      for (let txIndex = 0; txIndex < block.tx.length; txIndex++) {
-        const tx = block.tx[txIndex];
-        const ex = extractEnvelope(tx);
-        if (ex.kind === 'none') continue;
-        const res = await this.validate(ex, H);
-        if (res.ok) {
-          const { env } = res;
-          for (const n of env.nf) {
-            this.nullifiers.add(n);
-            rec.nfs.push(n);
-          }
-          const outputs = env.cm.map((c, k) => ({
-            pos: this.tree.append(c),
-            cm: c,
-            epk: env.epk[k],
-            ct: env.ct[k],
-          })) as [AcceptedOutput, AcceptedOutput];
-          this.acceptedList.push({
-            height: H,
-            txIndex,
-            txid: tx.txid,
-            hAnchor: env.hAnchor,
-            hBody: res.hBody,
-            nfs: [env.nf[0], env.nf[1]],
-            outputs,
-          });
-          rec.accepted++;
-        } else if (res.code !== 'NONE') {
-          this.rejectedList.push({ height: H, txIndex, txid: tx.txid, code: res.code, reason: res.reason });
-          rec.rejected++;
-        }
-      }
-    } catch (e) {
-      this.undoRecord(rec);
-      throw e;
-    } finally {
-      this.applying = false;
+  /** Validates transaction `txIndex` of block H and records its effect in the state and in `rec`. */
+  private async applyTransaction(H: number, txIndex: number, tx: BlockTx, rec: UndoRecord): Promise<void> {
+    const extracted = extractEnvelope(tx);
+    if (extracted.kind === 'none') return;
+    const res = await this.validate(extracted, H);
+    if (res.ok) {
+      this.accept(H, txIndex, tx.txid, res, rec);
+    } else if (res.code !== 'NONE') {
+      this.rejectedList.push({ height: H, txIndex, txid: tx.txid, code: res.code, reason: res.reason });
+      rec.rejected++;
     }
+  }
 
-    // After the last transaction. An empty (or all-rejected) block carries the root forward.
+  /** The mutation of an accepted envelope: its nullifiers join N, its commitments join T. */
+  private accept(H: number, txIndex: number, txid: string, valid: ValidEnvelope, rec: UndoRecord): void {
+    const { env } = valid;
+    for (const n of env.nf) {
+      this.nullifiers.add(n);
+      rec.nfs.push(n);
+    }
+    const outputs = env.cm.map((c, k) => ({
+      pos: this.tree.append(c),
+      cm: c,
+      epk: env.epk[k],
+      ct: env.ct[k],
+    })) as [AcceptedOutput, AcceptedOutput];
+    this.acceptedList.push({
+      height: H,
+      txIndex,
+      txid,
+      hAnchor: env.hAnchor,
+      hBody: valid.hBody,
+      nfs: [env.nf[0], env.nf[1]],
+      outputs,
+    });
+    rec.accepted++;
+  }
+
+  /** After the last transaction. An empty (or all-rejected) block carries the root forward. */
+  private commitBlock(H: number, hash: string, rec: UndoRecord): void {
     this.roots.set(H, rec.accepted > 0 ? this.tree.root() : (this.roots.get(H - 1) as bigint));
-    this.hashes.set(H, block.hash);
+    this.hashes.set(H, hash);
     this.sizes.set(H, this.tree.size);
     this.undo.set(H, rec);
     this.tipHeight = H;
@@ -450,45 +512,51 @@ export class Replay {
     let applied = 0;
     for (;;) {
       const nodeHeight = await rpc.getBlockCount();
-      while (this.tipHeight > this.baseHeight) {
-        const mine = this.hashes.get(this.tipHeight);
-        if (this.tipHeight <= nodeHeight && mine === (await rpc.getBlockHash(this.tipHeight))) break;
-        this.rollback();
-        rolledBack++;
-      }
-
-      let mismatch = false;
-      for (let h = this.tipHeight + 1; h <= nodeHeight; h++) {
-        let block: BlockLike;
-        try {
-          block = await rpc.getBlock(await rpc.getBlockHash(h), 2);
-        } catch (e) {
-          // The chain shrank or switched under us: -8 height out of range,
-          // -5 block not found. Anything else (e.g. pruned data) is fatal.
-          if (e instanceof RpcError && (e.code === -8 || e.code === -5)) {
-            mismatch = true;
-            break;
-          }
-          throw e;
-        }
-        try {
-          await this.applyBlock(h, block);
-          applied++;
-        } catch (e) {
-          if (e instanceof ChainMismatchError) {
-            mismatch = true;
-            break;
-          }
-          throw e;
-        }
-      }
-      if (mismatch) continue;
-
-      const best = await rpc.getBestBlockHash();
-      const nowHeight = await rpc.getBlockCount();
-      if (nowHeight <= this.baseHeight || (nowHeight === this.tipHeight && best === this.tipHash)) break;
+      rolledBack += await this.rollbackToNodeChain(rpc, nodeHeight);
+      const forward = await this.applyNodeBlocks(rpc, nodeHeight);
+      applied += forward.applied;
+      if (!forward.isChainMismatch && (await this.isSyncedWith(rpc))) break;
     }
     return { rolledBack, applied };
+  }
+
+  /** Rolls back (never below S-1) while the tip is above nodeHeight or its hash differs from the node's. */
+  private async rollbackToNodeChain(rpc: BitcoinRpc, nodeHeight: number): Promise<number> {
+    let rolledBack = 0;
+    while (this.tipHeight > this.baseHeight) {
+      const mine = this.hashes.get(this.tipHeight);
+      if (this.tipHeight <= nodeHeight && mine === (await rpc.getBlockHash(this.tipHeight))) break;
+      this.rollback();
+      rolledBack++;
+    }
+    return rolledBack;
+  }
+
+  /** Applies the node's blocks up to nodeHeight; stops early if its chain shrank or switched meanwhile. */
+  private async applyNodeBlocks(
+    rpc: BitcoinRpc,
+    nodeHeight: number,
+  ): Promise<{ applied: number; isChainMismatch: boolean }> {
+    let applied = 0;
+    for (let h = this.tipHeight + 1; h <= nodeHeight; h++) {
+      const block = await fetchActiveBlock(rpc, h);
+      if (!block) return { applied, isChainMismatch: true };
+      try {
+        await this.applyBlock(h, block);
+      } catch (e) {
+        if (e instanceof ChainMismatchError) return { applied, isChainMismatch: true };
+        throw e;
+      }
+      applied++;
+    }
+    return { applied, isChainMismatch: false };
+  }
+
+  /** True when the node's tip is ours (or still at or below S-1), i.e. it did not move during the sync. */
+  private async isSyncedWith(rpc: BitcoinRpc): Promise<boolean> {
+    const best = await rpc.getBestBlockHash();
+    const nodeHeight = await rpc.getBlockCount();
+    return nodeHeight <= this.baseHeight || (nodeHeight === this.tipHeight && best === this.tipHash);
   }
 
   // ---- Digest ----
@@ -516,30 +584,11 @@ export class Replay {
    */
   digest(): Digest {
     const H = this.tipHeight;
-    const tipHash = this.tipHash ? hexToBytes(this.tipHash) : ZERO32;
+    const tipHash = this.tipHash ? hexToBytes(this.tipHash) : GENESIS_TIP_HASH;
     const root = bigIntToBytes(this.roots.get(H) as bigint);
-
-    const nfHasher = sha256.create();
-    for (const n of [...this.nullifiers].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))) {
-      nfHasher.update(bigIntToBytes(n));
-    }
-    const nfHash = nfHasher.digest();
-
-    const rootsHasher = sha256.create();
-    for (let h = this.baseHeight; h <= H; h++) {
-      rootsHasher.update(u32le(h)).update(bigIntToBytes(this.roots.get(h) as bigint));
-    }
-    const rootsHash = rootsHasher.digest();
-
-    const histHasher = sha256.create();
-    for (const e of this.acceptedList) {
-      histHasher
-        .update(u32le(e.height))
-        .update(u32le(e.txIndex))
-        .update(hexToBytes(e.txid))
-        .update(bigIntToBytes(e.hBody));
-    }
-    const histHash = histHasher.digest();
+    const nfHash = this.nullifierHash();
+    const rootsHash = this.rootHistoryHash();
+    const histHash = this.acceptedHistoryHash();
     const profile = this.profile();
 
     const d = sha256
@@ -567,4 +616,31 @@ export class Replay {
       profile: bytesToHex(profile),
     };
   }
+
+  /** Sorted, so it does not depend on the order nullifiers were inserted. */
+  private nullifierHash(): Uint8Array {
+    const hasher = sha256.create();
+    for (const n of [...this.nullifiers].sort(compareBigInt)) hasher.update(bigIntToBytes(n));
+    return hasher.digest();
+  }
+
+  private rootHistoryHash(): Uint8Array {
+    const hasher = sha256.create();
+    for (let h = this.baseHeight; h <= this.tipHeight; h++) {
+      hasher.update(u32le(h)).update(bigIntToBytes(this.roots.get(h) as bigint));
+    }
+    return hasher.digest();
+  }
+
+  private acceptedHistoryHash(): Uint8Array {
+    const hasher = sha256.create();
+    for (const e of this.acceptedList) {
+      hasher.update(u32le(e.height)).update(u32le(e.txIndex)).update(hexToBytes(e.txid)).update(bigIntToBytes(e.hBody));
+    }
+    return hasher.digest();
+  }
+}
+
+function compareBigInt(a: bigint, b: bigint): number {
+  return a < b ? -1 : a > b ? 1 : 0;
 }

@@ -9,9 +9,9 @@ import { assertField, hashPair } from './crypto.js';
 
 /** ZEROS[d] = root of an empty subtree of height d. ZEROS[0] = 0 (empty leaf). */
 export const ZEROS: readonly bigint[] = (() => {
-  const z: bigint[] = [0n];
-  for (let d = 0; d < DEPTH; d++) z.push(hashPair(z[d], z[d]));
-  return z;
+  const zeros: bigint[] = [0n];
+  for (let d = 0; d < DEPTH; d++) zeros.push(hashPair(zeros[d], zeros[d]));
+  return zeros;
 })();
 
 /** Root of the empty tree. */
@@ -65,12 +65,12 @@ export class NoteTree {
     this.checkPos(pos, size);
     const path: bigint[] = [];
     let level = this.leaves.slice(0, size);
-    let idx = pos;
+    let index = pos;
     for (let d = 0; d < DEPTH; d++) {
-      const sib = idx ^ 1;
-      path.push(sib < level.length ? level[sib] : ZEROS[d]);
+      const sibling = index ^ 1;
+      path.push(sibling < level.length ? level[sibling] : ZEROS[d]);
       level = NoteTree.parentLevel(level, d);
-      idx >>= 1;
+      index >>= 1;
     }
     return path;
   }
@@ -88,12 +88,12 @@ export class NoteTree {
   static verifyPath(leaf: bigint, pos: number, path: readonly bigint[]): bigint {
     if (path.length !== DEPTH) throw new RangeError(`path must have ${DEPTH} elements`);
     if (!Number.isInteger(pos) || pos < 0 || pos >= MAX_LEAVES) throw new RangeError('pos out of range');
-    let cur = leaf;
+    let node = leaf;
     for (let d = 0; d < DEPTH; d++) {
-      const bit = (pos >> d) & 1;
-      cur = bit === 0 ? hashPair(cur, path[d]) : hashPair(path[d], cur);
+      const isLeftChild = ((pos >> d) & 1) === 0;
+      node = isLeftChild ? hashPair(node, path[d]) : hashPair(path[d], node);
     }
-    return cur;
+    return node;
   }
 
   private static parentLevel(level: readonly bigint[], d: number): bigint[] {

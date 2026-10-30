@@ -4,16 +4,14 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { extractEnvelope, parse } from '../../src/codec.js';
 import { BODY_BYTES } from '../../src/constants.js';
-import { bytesToHex, cm, decryptNote, hBody, keysFromSeed, noteMatches, randomField } from '../../src/crypto.js';
-import { bytesToProof, dummyInput, publicSignalsOf, shutdownProver, verify } from '../../src/prover.js';
+import { bytesToHex, decryptNote, hBody, noteMatches } from '../../src/crypto.js';
+import { bytesToProof, publicSignalsOf, shutdownProver, verify } from '../../src/prover.js';
 import { buildEnvelopeTx, publishEnvelope } from '../../src/rpc.js';
-import { NoteTree } from '../../src/tree.js';
-import { craftTransfer, type CraftedTransfer } from '../helpers/craft.js';
+import { craftAliceToBob, type CraftedTransfer } from '../helpers/craft.js';
+import { bob } from '../helpers/fixtures.js';
 import { fundWallet, initMiner, mine, startNode, waitForHeight, type RegtestNode } from '../helpers/regtest.js';
 
 const FEE_WALLET = 'alice-fee';
-const alice = keysFromSeed(new Uint8Array(32).fill(0xa1));
-const bob = keysFromSeed(new Uint8Array(32).fill(0xb0));
 
 let node: RegtestNode;
 let strict: RegtestNode | undefined;
@@ -26,20 +24,8 @@ beforeAll(async () => {
   await fundWallet(node, FEE_WALLET, 1);
 
   // Genesis-like note: Alice holds 100 units at position 0.
-  const tree = new NoteTree();
-  const rseed = randomField();
-  const pos = tree.append(cm(100n, alice.owner, rseed));
-  root = tree.root();
-  crafted = await craftTransfer({
-    root,
-    hAnchor: await node.rpc.getBlockCount(),
-    skSpend: alice.skSpend,
-    inputs: [{ v: 100n, rseed, pos, path: tree.witness(pos) }, dummyInput()],
-    outputs: [
-      { v: 30n, owner: bob.owner, pkEnc: bob.pkEnc },
-      { v: 70n, owner: alice.owner, pkEnc: alice.pkEnc },
-    ],
-  });
+  crafted = await craftAliceToBob({ v: 100n, pay: 30n, hAnchor: await node.rpc.getBlockCount() });
+  root = crafted.input.root;
 });
 
 afterAll(async () => {

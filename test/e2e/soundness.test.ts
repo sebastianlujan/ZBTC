@@ -1,21 +1,20 @@
 // Soundness and malleability on a real chain. Every forged or mutated
 // envelope is put in its own carrier from a separate fee coin and mined with
 // generateblock, so the outcome depends only on the shielded rules.
-import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { extractEnvelope, parse } from '../../src/codec.js';
-import { CIRCUITS, R } from '../../src/constants.js';
+import { R } from '../../src/constants.js';
 import { cm as noteCm, encryptNote, randomField } from '../../src/crypto.js';
 import type { Replay } from '../../src/indexer.js';
 import {
   buildCircuitInput,
   bytesToProof,
   dummyInput,
+  loadVkey,
   proofToBytes,
   prove,
   shutdownProver,
   verify,
-  type VerificationKey,
 } from '../../src/prover.js';
 import type { TransferHooks, TransferResult } from '../../src/wallet.js';
 import {
@@ -34,7 +33,7 @@ import { makeWorld, type World } from '../helpers/world.js';
 
 const NOTES = 12;
 const SUPPLY = 100n * BigInt(NOTES);
-const vk = JSON.parse(readFileSync(CIRCUITS.main.vkey, 'utf8')) as VerificationKey;
+const vk = loadVkey();
 
 let w: World;
 /** Value made undetectable on purpose (garbage ciphertext, case g). */

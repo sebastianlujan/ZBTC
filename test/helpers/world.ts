@@ -1,13 +1,13 @@
 // A regtest "world": one bitcoind, a miner, shielded wallets with funded fee
 // wallets, a genesis inventory and a shared incremental replay.
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { randomBytes, utf8ToBytes } from '@noble/hashes/utils.js';
+import { randomBytes } from '@noble/hashes/utils.js';
 import { CIRCUITS } from '../../src/constants.js';
 import { randomField } from '../../src/crypto.js';
-import { loadGenesis, makeGenesis, Replay, type ReplayOptions } from '../../src/indexer.js';
-import type { VerificationKey } from '../../src/prover.js';
+import { makeGenesis, Replay, type GenesisNote, type ReplayOptions } from '../../src/indexer.js';
 import { Wallet, type Balance, type TransferHooks, type TransferResult, type WalletView } from '../../src/wallet.js';
+import { replayOptionsFor } from './fixtures.js';
 import { fundWallet, initMiner, mine, startNode, type NodeOptions, type RegtestNode } from './regtest.js';
 
 export interface WorldOptions {
@@ -46,52 +46,54 @@ export interface World {
   stop(): Promise<void>;
 }
 
+const FEE_WALLET_BTC = 1;
+const DEFAULT_FEE_UTXOS = 3;
+const SEED_BYTES = 32;
+
+/** One genesis note per listed value, owned by that actor's wallet. */
+function genesisEntries(genesis: WorldOptions['genesis'], wallets: Record<string, Wallet>): GenesisNote[] {
+  return Object.entries(genesis).flatMap(([actor, values]) => {
+    if (!wallets[actor]) throw new Error(`genesis actor ${actor} is not in actors`);
+    const owner = wallets[actor].owner;
+    return (Array.isArray(values) ? values : [values]).map((v) => ({ v, owner, rseed: randomField() }));
+  });
+}
+
+/** Writes genesis.json and config.json for CLI subprocesses; returns their ZBTC_DIR. */
+function writeCliFiles(node: RegtestNode, genesisText: string): string {
+  const zbtcDir = path.join(node.datadir, 'zbtc');
+  mkdirSync(zbtcDir, { recursive: true });
+  const genesisPath = path.join(zbtcDir, 'genesis.json');
+  writeFileSync(genesisPath, genesisText);
+  const config = {
+    datadir: node.datadir,
+    rpcPort: node.rpcPort,
+    genesisPath,
+    vkeyPath: CIRCUITS.main.vkey,
+    minerWallet: node.miner!.wallet,
+    minerAddress: node.miner!.address,
+  };
+  writeFileSync(path.join(zbtcDir, 'config.json'), JSON.stringify(config, null, 2));
+  return zbtcDir;
+}
+
 export async function makeWorld(o: WorldOptions): Promise<World> {
   const node = await startNode({ txindex: true, ...o.node });
   try {
     await initMiner(node);
-    const feeWallet = (a: string) => `${a}-fee`;
-    for (const a of o.actors) await fundWallet(node, feeWallet(a), 1, o.feeUtxos ?? 3);
-    for (const f of o.extraFeeWallets ?? []) await fundWallet(node, f, 1, o.feeUtxos ?? 3);
+    const feeWallet = (actor: string) => `${actor}-fee`;
+    const feeUtxos = o.feeUtxos ?? DEFAULT_FEE_UTXOS;
+    for (const actor of o.actors) await fundWallet(node, feeWallet(actor), FEE_WALLET_BTC, feeUtxos);
+    for (const name of o.extraFeeWallets ?? []) await fundWallet(node, name, FEE_WALLET_BTC, feeUtxos);
 
     const wallets: Record<string, Wallet> = {};
-    for (const a of o.actors) wallets[a] = Wallet.fromSeed(randomBytes(32));
+    for (const actor of o.actors) wallets[actor] = Wallet.fromSeed(randomBytes(SEED_BYTES));
 
     const S = (await node.rpc.getBlockCount()) + 1;
-    const entries = Object.entries(o.genesis).flatMap(([a, vs]) => {
-      if (!wallets[a]) throw new Error(`genesis actor ${a} is not in actors`);
-      return (Array.isArray(vs) ? vs : [vs]).map((v) => ({ v, owner: wallets[a].owner, rseed: randomField() }));
-    });
-    const genesisText = makeGenesis(entries, S);
+    const genesisText = makeGenesis(genesisEntries(o.genesis, wallets), S);
+    const zbtcDir = writeCliFiles(node, genesisText);
 
-    // Files a CLI subprocess can use (ZBTC_DIR=zbtcDir).
-    const zbtcDir = path.join(node.datadir, 'zbtc');
-    mkdirSync(zbtcDir, { recursive: true });
-    const genesisPath = path.join(zbtcDir, 'genesis.json');
-    writeFileSync(genesisPath, genesisText);
-    writeFileSync(
-      path.join(zbtcDir, 'config.json'),
-      JSON.stringify(
-        {
-          datadir: node.datadir,
-          rpcPort: node.rpcPort,
-          genesisPath,
-          vkeyPath: CIRCUITS.main.vkey,
-          minerWallet: node.miner!.wallet,
-          minerAddress: node.miner!.address,
-        },
-        null,
-        2,
-      ),
-    );
-
-    const vkeyBytes = new Uint8Array(readFileSync(CIRCUITS.main.vkey));
-    const opts: ReplayOptions = {
-      genesis: loadGenesis(genesisText),
-      genesisBytes: utf8ToBytes(genesisText),
-      vkey: JSON.parse(new TextDecoder().decode(vkeyBytes)) as VerificationKey,
-      vkeyBytes,
-    };
+    const opts = replayOptionsFor(genesisText);
     const shared = new Replay(opts);
     const replay = async () => {
       await shared.sync(node.rpc);
