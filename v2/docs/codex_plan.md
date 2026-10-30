@@ -2,11 +2,11 @@
 
 A functional toy note-to-AADP-to-Bitcoin demonstration.
 
-Date: 2026-10-30. Status: **planned**. Runtime validation: **not run**.
+Date: 2026-10-30. Status: **implemented** (P00–P04 in TypeScript; see [claude_plan.md](claude_plan.md)). Runtime validation: **passed** on Bitcoin Core 32.1 regtest.
 
 Show one complete functional path: a known toy note at a frozen snapshot supplies the witness for actual AADP decryption; the recovered secret unlocks a Bitcoin key, and that key spends one native regtest UTXO. Reconstruct missing code from the paper. Deliberately weak relations, tiny secrets and an honest setup are acceptable. Security hardening is not a prerequisite or an objective of this demo.
 
-**Current authorization:** Research and planning documents only (this plan and [research.md](research.md)). No cryptographic execution, installation, or PoC implementation.
+**Implementation:** `v2/src` and `v2/test` implement P00–P04 as milestones M1–M4 of [claude_plan.md](claude_plan.md). P05–P07 remain deferred.
 
 **Revision note:** Scope corrected to functional education only. Required path includes the direct toy-note relation and confirmed native spend. Security research is deferred. Only planning documents changed; no cryptographic execution or implementation.
 
@@ -54,7 +54,7 @@ Optional paths, all deferred:
 
 ## Reconstruct missing pieces from the paper
 
-Reconstruct the published matrix algorithms; use R01 only as a conformance checkpoint and R04 as the required deliberately insecure note relation. All derivations and experiments remain planned, not executed.
+Reconstruct the published matrix algorithms; use R01 only as a conformance checkpoint and R04 as the required deliberately insecure note relation. The derivations are reconstructed in TypeScript and executed by the unit and e2e tests.
 
 The original equations and the deliberately uncertified R04 relation are used only for a functional educational example. Published attacks and proposed patches remain background. Security hardening, projective certification, MPC and setup proofs are deferred and do not gate this demo. [S12](https://www.allocinit.xyz/uploads/aadp-attacks.pdf) [S13](https://www.allocinit.xyz/posts/commutator-attack) [S05](https://insider.btcpp.dev/p/shielded-bitcoin-and-pipes-facts)
 
@@ -104,17 +104,17 @@ Optional later extension only. A reduced-round hash is acceptable if explicitly 
 - Hypothetical sensitivity case, not a hash estimate: n=100, m=100, **130,576,032 bytes**.
 - Hypothetical sensitivity case, not a hash estimate: n=1000, m=1000, **128,256,160,032 bytes**.
 
-Forecast before allocation; 256 MiB is an initial practical ceiling, not a security requirement. R04 forecasts 10368 bytes of dense 32-byte field entries, excluding framing and the envelope; runtime and exact serialization remain unmeasured.
+Forecast before allocation; 256 MiB is an initial practical ceiling, not a security requirement. R04 forecasts 10368 bytes of dense 32-byte field entries, excluding framing and the envelope. Measured: the demo's `ciphertext.bin` is exactly 10,368 bytes (see [research.md](research.md#measurements)).
 
-**Planned checks:**
+**Checks:**
 
-- R01 expected row values: 4=4, 8=8, 32=32, 16=16, 64=64. R04 expected row values: 9=9, 0=0, 15=15, 100000=100000. These are hand-derived expectations, not executed tests.
+- R01 expected row values: 4=4, 8=8, 32=32, 16=16, 64=64. R04 expected row values: 9=9, 0=0, 15=15, 100000=100000. Asserted by `test/unit/aadp.test.ts` and `test/unit/note.test.ts`.
 - For the selected deterministic fixture, compare emitted rows and assignments, record the recovery cofactor, then compare recovered mu and key bytes with expected values.
 - A selected wrong assignment can produce any candidate t, including an accidental recovery. Record equality/AEAD results without asserting universal failure or soundness.
 - Context is authenticated only by the envelope convention and selected transaction unless explicitly constrained. R04 alone does not check Bitcoin state or recipient.
 - Confirm the real regtest transaction using the planned-interface txid, amount, fee and spent-outpoint checks. Projective certificates and adversarial attack tests are not demo acceptance criteria.
 
-**Remaining implementation choices:** Recorded setup seed with a nonzero recovery cofactor; Canonical field/matrix/key encodings and AEAD associated data; Pinned Sage/Bitcoin Core versions and explicit Bitcoin key/tweak convention.
+**Implementation choices made:** the setup seed is recorded in `fixture.json`, with a numbered retry if a sampled setup has a zero cofactor; field elements are 32-byte big-endian, the ciphertext is dense and row-major, and the associated data is canonical JSON over public terms only; the manifest records Node and Bitcoin Core versions (no Sage); the key is a BIP341 key-path output with no script tree.
 
 **Functional stop conditions:**
 
@@ -140,14 +140,14 @@ R04 constrains only its stated note equations. Snapshot, outpoint and recipient 
 - The resulting native transaction spends the fixture outpoint and is confirmed by regtest Core with the specified output and fee. Local note accounting alone is insufficient.
 - A local consumed marker is a transcript convenience only. Old witnesses, alternate spends and public witness copying are acknowledged but need no prevention mechanism in this one-shot experiment.
 
-## Planned minimal interface
+## Minimal interface
 
-These are proposed calls and files, not implemented artifacts.
+Implemented as `prepare` and `unlock` in `src/unlock.ts` and `buildSpend` in `src/demo.ts`; `pnpm demo` writes the files below to `v2/.demo/`. `prepare` also takes the Bitcoin key it wraps, and the ciphertext file is `ciphertext.bin`. `fixture.json` freezes the funding outpoint but records no separate block snapshot, and the key convention is fixed in code rather than stored.
 
 ```text
-prepare(fixture) -> coefficients, ciphertext, envelope, witness
+prepare(fixture, btc_sk) -> ciphertext, envelope, witness, setup attempt, cofactor
 unlock(ciphertext, envelope, witness) -> recovered_btc_key
-spend(fixture, recovered_btc_key) -> raw_transaction, result
+buildSpend(fixture, recovered_btc_key) -> signed transaction
 ```
 
 - `fixture.json`: Field/relation identity, fixed note constants, known test secrets, Bitcoin key/address convention, selected snapshot, funding outpoint, recipient and amounts. Secrets may be present because this is an explicit test fixture.
@@ -163,14 +163,14 @@ spend(fixture, recovered_btc_key) -> raw_transaction, result
 - Seeds/fixtures may make local algebra deterministic. Cross-run transaction IDs are equal only if funding outpoints and all transaction bytes are also identical; no cross-run block-timestamp assumption is required.
 - For a selected changed witness, record candidate mu and AEAD outcome. A mismatch is illustrative; accidental recovery or another valid opening is permitted by the deliberately insecure relation.
 
-## Planned phases
+## Phases
 
 ### P00 — Freeze the experiment
 
 **core**; depends on: none. Make the smallest claim reproducible before implementing anything.
 
-- [ ] Record the AADP source, Sage and Bitcoin Core versions, selected field and deliberately insecure fixture values.
-- [ ] Fix one note, funding outpoint, recipient, amount and fee; use the small artifact interface below with an explicitly honest setup.
+- [x] Record the AADP source, Sage and Bitcoin Core versions, selected field and deliberately insecure fixture values. *(No Sage: Algorithms 1–3 are reconstructed in TypeScript, and the manifest records Node and Core.)*
+- [x] Fix one note, funding outpoint, recipient, amount and fee; use the small artifact interface below with an explicitly honest setup.
 
 **Deliverable:** D00 — Source/environment manifest and public/private artifact inventory.
 
@@ -184,9 +184,9 @@ spend(fixture, recovered_btc_key) -> raw_transaction, result
 
 **core**; depends on: P00. Exercise real AADP decryption without a note system or Bitcoin integration.
 
-- [ ] Reuse the official small construction or reconstruct R01-R03 to check matrix/envelope plumbing; this checkpoint alone is not the note demo.
-- [ ] Check expected-mu recovery and HKDF/AEAD recovery of complete key bytes; do not reduce a Bitcoin scalar modulo the AADP field.
-- [ ] Record one selected alternate-witness/envelope result without requiring all wrong witnesses to fail or treating sample results as a security test.
+- [x] Reuse the official small construction or reconstruct R01-R03 to check matrix/envelope plumbing; this checkpoint alone is not the note demo. *(R01 only.)*
+- [x] Check expected-mu recovery and HKDF/AEAD recovery of complete key bytes; do not reduce a Bitcoin scalar modulo the AADP field.
+- [x] Record one selected alternate-witness/envelope result without requiring all wrong witnesses to fail or treating sample results as a security test.
 
 **Deliverable:** D01 — Expected-value matrix/envelope transcript for the selected conformance fixture.
 
@@ -200,9 +200,9 @@ spend(fixture, recovered_btc_key) -> raw_transaction, result
 
 **core**; depends on: P00. Define a minimal amount/owner/opening relation tied to the one local funding fixture.
 
-- [ ] Use R04 exactly: amount=100000, k_owner=3, rho=5, owner_tag=9, C_note=100014 and N=15; declare this algebraic commitment deliberately weak.
-- [ ] Freeze one selected regtest snapshot and associate this issued note with one UTXO. Treat snapshot/outpoint/recipient as chosen metadata, not dynamically checked AADP state.
-- [ ] Specify the four witness coordinates, fixed note/output amount and 101000=100000+1000 funding/output/fee split; keep every Bitcoin key byte separate from field-element encoding.
+- [x] Use R04 exactly: amount=100000, k_owner=3, rho=5, owner_tag=9, C_note=100014 and N=15; declare this algebraic commitment deliberately weak.
+- [x] Freeze one selected regtest snapshot and associate this issued note with one UTXO. Treat snapshot/outpoint/recipient as chosen metadata, not dynamically checked AADP state. *(The outpoint is frozen; no separate block snapshot is recorded.)*
+- [x] Specify the four witness coordinates, fixed note/output amount and 101000=100000+1000 funding/output/fee split; keep every Bitcoin key byte separate from field-element encoding.
 
 **Deliverable:** D03 — One concrete note/funding fixture and its four-row coefficient/witness specification.
 
@@ -216,10 +216,10 @@ spend(fixture, recovered_btc_key) -> raw_transaction, result
 
 **core**; depends on: P01, P03. Connect the four-row note relation to actual AADP matrix generation, encryption and recovery.
 
-- [ ] Reconstruct the Eq. (1) row emitter and Algorithms 1-3 if needed; emit R04 rows and its deterministic assignment without challenge-specific normalization.
-- [ ] Check the row equalities, construct the ciphertext and recover mu with the note assignment; feed that recovered mu into the actual HKDF/AEAD key envelope.
-- [ ] Record the selected cofactor and recovered-secret checks. If a sampled setup has zero cofactor, report it and choose another recorded setup; investigate the algebra if no valid fixture recovers.
-- [ ] Keep the relation deliberately uncertified and weak; record that departure from the paper security class. Projective-safety certification, full Poseidon, patches and adversarial tests are not prerequisites.
+- [x] Reconstruct the Eq. (1) row emitter and Algorithms 1-3 if needed; emit R04 rows and its deterministic assignment without challenge-specific normalization.
+- [x] Check the row equalities, construct the ciphertext and recover mu with the note assignment; feed that recovered mu into the actual HKDF/AEAD key envelope.
+- [x] Record the selected cofactor and recovered-secret checks. If a sampled setup has zero cofactor, report it and choose another recorded setup; investigate the algebra if no valid fixture recovers.
+- [x] Keep the relation deliberately uncertified and weak; record that departure from the paper security class. Projective-safety certification, full Poseidon, patches and adversarial tests are not prerequisites.
 
 **Deliverable:** D04 — Functional note-assignment -> ciphertext -> recovered mu/key transcript and measured artifact sizes when implemented.
 
@@ -233,9 +233,9 @@ spend(fixture, recovered_btc_key) -> raw_transaction, result
 
 **core**; depends on: P04. Connect the recovered key to an ordinary Bitcoin transaction.
 
-- [ ] Use one dedicated regtest key/address fixture with explicit Taproot key/tweak handling.
-- [ ] Build and sign with the key recovered from the R04 note witness; submit and mine the transaction with 100000 sats to the recipient and a 1000-sat fee.
-- [ ] Record the expected txid computed from raw transaction bytes, compare it with Core, and use getrawtransaction to check confirmation and recipient value, and gettxout to check the spent funding outpoint and unspent recipient output.
+- [x] Use one dedicated regtest key/address fixture with explicit Taproot key/tweak handling.
+- [x] Build and sign with the key recovered from the R04 note witness; submit and mine the transaction with 100000 sats to the recipient and a 1000-sat fee.
+- [x] Record the expected txid computed from raw transaction bytes, compare it with Core, and use getrawtransaction to check confirmation and recipient value, and gettxout to check the spent funding outpoint and unspent recipient output.
 
 **Deliverable:** D02 — Funding/spend transaction identifiers and a short demonstration transcript.
 

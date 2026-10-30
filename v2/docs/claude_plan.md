@@ -1,5 +1,28 @@
 # Plan: ZBTC v2: implement the toy note → AADP → Taproot regtest spend
 
+## Status
+
+All milestones are done, one commit each on `feat/v2-aadp`. `pnpm demo` passes its ten
+checks, and `pnpm test:e2e` passed twice in a row.
+
+| Milestone | Commit |
+| --- | --- |
+| M0 docs | `docs: restructure the v1 and v2 docs` |
+| M1 AADP core | `feat(v2): add aadp matrix encryption over the bn254 base field` |
+| M2 note unlock | `feat(v2): unlock the wrapped key from the r04 note witness` |
+| M3 Taproot | `feat(v2): sign a taproot key-path spend with the recovered key` |
+| M4 regtest demo | `feat(v2): run the note-to-spend demo on regtest` |
+| M5 docs | `docs(v2): document the implemented demo` |
+
+Deviations from the plan below:
+
+- `src/rpc.ts` moved from M3 to M4, the first milestone that calls a node.
+- `prepare(fixture, secretKey)` takes the key it wraps as an argument; the fixture stays
+  free of the Bitcoin key.
+- Added `src/json.ts` (JSON readers), `src/artifacts.ts` (writes `.demo/`) and
+  `src/main.ts` (the `pnpm demo` entry point), so `src/demo.ts` stays free of file I/O.
+- The ciphertext artifact is `ciphertext.bin`, the dense 10,368-byte encoding.
+
 ## Context
 
 `v2/docs/codex_plan.md` specifies a functional demo. The witness of a toy note (R04) drives real AADP matrix decryption. The decryption recovers `mu`, which unwraps a Bitcoin key through HKDF+AEAD. That key signs a native regtest spend: fund 101,000 sats, pay 100,000 and leave a 1,000-sat fee. The required phase order is P00 → P01 → P03 → P04 → P02.

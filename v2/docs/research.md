@@ -1,6 +1,6 @@
 # ZBTC v2: research, limits and sources
 
-Date: 2026-10-30. Companion to [codex_plan.md](codex_plan.md). Sources were read only; nothing was executed.
+Date: 2026-10-30. Companion to [codex_plan.md](codex_plan.md). Sources were read only; the claims below describe them. What the implementation measured is in [Measurements](#measurements).
 
 ## Conclusion
 
@@ -47,3 +47,32 @@ Sources inspected on 2026-10-30 through reading only. P00 must pin moving branch
 | S11 | [Official AADP challenge repository inventory](https://github.com/alloc-init/aadp-cryptographic-challenges/tree/master/code) | code directory and repository README | master; commit not pinned | Inspect available files and bounded repository search; no claim of global absence | 2026-10-30 |
 | S12 | [Official cryptanalysis: Breaking ADP-Based Witness Encryption](https://www.allocinit.xyz/uploads/aadp-attacks.pdf) | Section 1.1 pp.3-4; Section 5 p.17; Section 6.2 p.25; Section 6.4 p.27; Section 7 p.28 | Official [posts catalog](https://www.allocinit.xyz/posts) lists 2026-08-20; served 32-page PDF; no content hash recorded | Opened the Cryptanalysis of ADP-based Witness Encryption link from the official posts catalog; read primary PDF attack scope, practical evaluation and conclusion. No attack executed. | 2026-10-30 |
 | S13 | [Official AADP WE Commutator Attack and Patch](https://www.allocinit.xyz/posts/commutator-attack) | The Attack; The Patch; Characteristic p Patch; Mitigation Cost and Optimization Tricks | Article dated 2026-06-09; no content hash recorded | Opened from the official posts catalog and read the primary author proposal; patched code and security were not independently verified. | 2026-10-30 |
+
+## Measurements
+
+One `pnpm demo` run on 2026-10-30: Node 24.10.0, Bitcoin Core 32.1.0, macOS 27.0.1, regtest.
+These are single-run observations of a deliberately insecure toy, not benchmarks.
+
+| Quantity | Observed |
+| --- | --- |
+| R04 ciphertext (`ciphertext.bin`) | 10,368 bytes, exactly the forecast (n+1)·k²·32 with n=3, k=9 |
+| R01 ciphertext (unit test) | 15,488 bytes, exactly the forecast with n=3, k=11 |
+| Setup attempts | 1: attempt 0 already had a nonzero recovery cofactor |
+| Recovery cofactor | Nonzero; its value changes with the random setup seed |
+| Spend | 1 input, 1 output, 111 vB, 1,000-sat fee (about 9 sat/vB) |
+| Demo, end to end | About 3 s, node start and stop included |
+| Checks | 10 of 10 passed; `pnpm test:e2e` passed twice in a row |
+
+## Implementation findings
+
+- **Field.** The earlier JavaScript prototype computed over the BN254 scalar field r. The
+  spec, and this implementation, use the base field q; a unit test guards the difference.
+- **R04 row 2.** The prototype used `D = e0` where the spec has `D = 0`. Both happen to
+  evaluate to 0 for the fixture, so only a structural test catches the mismatch.
+- **Key width.** Encodings that drop leading zero bytes yield a 31-byte key for about 1 in
+  256 keys. The envelope wraps raw 32-byte keys and a unit test round-trips one that
+  starts with `0x00`.
+- **Amounts.** Core's JSON writes BTC amounts as floating-point numbers. They cross the RPC
+  boundary only through fixed 8-decimal strings, so no float arithmetic touches an amount.
+- **Taproot.** The tweak, the BIP341 signature message, the sighash and the signature
+  match the official vectors byte for byte, pinned at bitcoin/bips commit `e35a46ec`.
