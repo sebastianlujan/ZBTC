@@ -5,8 +5,8 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { randomBytes } from '@noble/hashes/utils.js';
-import { extractEnvelope, parse, serialize, serializeBody, type Envelope } from './codec.js';
-import { K_MIN, MAX_VALUE, N_IN, W } from './constants.js';
+import { envelopeHBody, extractEnvelope, parse, serialize, type Envelope } from './codec.js';
+import { CT_BYTES, K_MIN, MAX_VALUE, N_IN, PROOF_BYTES, W } from './constants.js';
 import {
   bytesToHex,
   cm as noteCm,
@@ -14,7 +14,6 @@ import {
   decryptNote,
   encodeAddress,
   encryptNote,
-  hBody,
   hexToBytes,
   keysFromSeed,
   nf as noteNf,
@@ -223,6 +222,52 @@ function shuffledOutputs(
   const paymentIndex = randomBytes(1)[0] & 1;
   if (paymentIndex === 1) outputs.reverse();
   return { outputs, paymentIndex };
+}
+
+interface EnvelopePlan {
+  root: bigint;
+  hAnchor: number;
+  skSpend: bigint;
+  inputs: SpendNote[];
+  outputs: NewNote[];
+  /** Output whose ciphertext is replaced with random bytes (TransferHooks.corruptCiphertext). */
+  corruptOutput?: number;
+}
+
+/**
+ * Encrypts the outputs, binds the body through h_body and proves the
+ * transfer. Throws unless the proof verifies locally for the expected public
+ * signals: a wallet must never publish a proof the indexer would reject.
+ */
+async function proveEnvelope(plan: EnvelopePlan): Promise<Envelope> {
+  const input = buildCircuitInput({
+    root: plan.root,
+    hBody: 0n, // placeholder: h_body depends on the body, which depends on nf/cm
+    skSpend: plan.skSpend,
+    inputs: plan.inputs,
+    outputs: plan.outputs.map(({ v, owner, rseed }) => ({ v, owner, rseed })),
+  });
+  const enc = plan.outputs.map((o, k) => encryptNote({ v: o.v, rseed: o.rseed }, o.pkEnc, input.cm[k]));
+  if (plan.corruptOutput !== undefined) {
+    enc[plan.corruptOutput] = { ...enc[plan.corruptOutput], ct: randomBytes(CT_BYTES) };
+  }
+  const env: Envelope = {
+    hAnchor: plan.hAnchor,
+    nf: [input.nf[0], input.nf[1]],
+    cm: [input.cm[0], input.cm[1]],
+    epk: [enc[0].epk, enc[1].epk],
+    ct: [enc[0].ct, enc[1].ct],
+    proofBytes: new Uint8Array(PROOF_BYTES),
+  };
+  input.hBody = envelopeHBody(env);
+  const { proof, publicSignals } = await prove(input);
+  env.proofBytes = proofToBytes(proof);
+
+  const signals = publicSignalsOf(plan.root, input.hBody, env.nf, env.cm);
+  if (publicSignals.join() !== signals.join() || !(await verify(signals, proof))) {
+    throw new Error('local proof verification failed; refusing to publish');
+  }
+  return env;
 }
 
 export class Wallet {
@@ -450,34 +495,18 @@ export class Wallet {
     // 3. Outputs: payment + change.
     const { outputs: outs, paymentIndex } = shuffledOutputs(amount, dest, change, this.keys);
 
-    // 4. Circuit input, encryption, body, h_body, proof.
-    const input = buildCircuitInput({
+    // 4. Encryption, body, h_body, proof (verified locally).
+    const env = await proveEnvelope({
       root,
-      hBody: 0n,
+      hAnchor: anchorHeight,
       skSpend: this.keys.skSpend,
       inputs,
-      outputs: outs.map(({ v, owner, rseed }) => ({ v, owner, rseed })),
+      outputs: outs,
+      corruptOutput: hooks.corruptCiphertext ? paymentIndex : undefined,
     });
-    const enc = outs.map((o, k) => encryptNote({ v: o.v, rseed: o.rseed }, o.pkEnc, input.cm[k]));
-    if (hooks.corruptCiphertext) enc[paymentIndex] = { ...enc[paymentIndex], ct: randomBytes(56) };
-    const env: Envelope = {
-      hAnchor: anchorHeight,
-      nf: [input.nf[0], input.nf[1]],
-      cm: [input.cm[0], input.cm[1]],
-      epk: [enc[0].epk, enc[1].epk],
-      ct: [enc[0].ct, enc[1].ct],
-      proofBytes: new Uint8Array(256),
-    };
-    input.hBody = hBody(serializeBody(env));
-    const { proof, publicSignals } = await prove(input);
-    env.proofBytes = proofToBytes(proof);
     const envelope = serialize(env);
 
-    // 5. Verify locally; refuse to publish anything the indexer would reject.
-    const signals = publicSignalsOf(root, input.hBody, env.nf, env.cm);
-    if (publicSignals.join() !== signals.join() || !(await verify(signals, proof))) {
-      throw new Error('local proof verification failed; refusing to publish');
-    }
+    // 5. Refuse to publish anything the indexer would reject.
     if (hooks.anchorOverride === undefined) {
       const check = await replay.validate(envelope, replay.tip + 1);
       if (!check.ok) throw new Error(`local validation failed (${check.code}: ${check.reason}); refusing to publish`);
