@@ -106,8 +106,8 @@ export function publicSignalsOf(
 }
 
 function toSnarkInput(input: CircuitInput): Record<string, unknown> {
-  const dec = (x: unknown): unknown => (Array.isArray(x) ? x.map(dec) : (x as bigint).toString(10));
-  return Object.fromEntries(Object.entries(input).map(([k, v]) => [k, dec(v)]));
+  const toDecimal = (x: unknown): unknown => (Array.isArray(x) ? x.map(toDecimal) : (x as bigint).toString(10));
+  return Object.fromEntries(Object.entries(input).map(([k, v]) => [k, toDecimal(v)]));
 }
 
 /**
@@ -118,8 +118,8 @@ export async function prove(
   input: CircuitInput,
   circuit: CircuitName = 'main',
 ): Promise<{ proof: Groth16Proof; publicSignals: PublicSignals }> {
-  const a = CIRCUITS[circuit];
-  return snarkjs.groth16.fullProve(toSnarkInput(input), a.wasm, a.zkey);
+  const artifacts = CIRCUITS[circuit];
+  return snarkjs.groth16.fullProve(toSnarkInput(input), artifacts.wasm, artifacts.zkey);
 }
 
 const vkeyCache = new Map<CircuitName, VerificationKey>();
@@ -172,11 +172,16 @@ export async function verifyWithVkey(
 // (pi_b[i] = [c0, c1]); it is NOT the EVM precompile order, which swaps c0/c1.
 // Points are affine, so the projective z is implicit ("1" / ["1", "0"]).
 
-function coord(s: string): bigint {
-  if (!isCanonicalDecimal(s)) throw new Error('proof coordinate is not a decimal string');
-  const x = BigInt(s);
+const PROOF_COORDINATES = PROOF_BYTES / FIELD_BYTES; // 8
+
+function assertBaseField(x: bigint): bigint {
   if (x >= Q) throw new RangeError('proof coordinate >= q');
   return x;
+}
+
+function decodeCoordinate(s: string): bigint {
+  if (!isCanonicalDecimal(s)) throw new Error('proof coordinate is not a decimal string');
+  return assertBaseField(BigInt(s));
 }
 
 export function proofToBytes(proof: Groth16Proof): Uint8Array {
@@ -184,7 +189,7 @@ export function proofToBytes(proof: Groth16Proof): Uint8Array {
   if (a[2] !== '1' || c[2] !== '1' || b[2][0] !== '1' || b[2][1] !== '0') {
     throw new Error('proof points must be affine (z = 1)');
   }
-  const coords = [a[0], a[1], b[0][0], b[0][1], b[1][0], b[1][1], c[0], c[1]].map(coord);
+  const coords = [a[0], a[1], b[0][0], b[0][1], b[1][0], b[1][1], c[0], c[1]].map(decodeCoordinate);
   const out = new Uint8Array(PROOF_BYTES);
   coords.forEach((x, i) => out.set(bigIntToBytes(x, FIELD_BYTES), i * FIELD_BYTES));
   return out;
@@ -194,9 +199,8 @@ export function proofToBytes(proof: Groth16Proof): Uint8Array {
 export function bytesToProof(bytes: Uint8Array): Groth16Proof {
   if (bytes.length !== PROOF_BYTES) throw new RangeError(`proof must be ${PROOF_BYTES} bytes`);
   const c: string[] = [];
-  for (let i = 0; i < 8; i++) {
-    const x = bytesToBigInt(bytes.subarray(i * FIELD_BYTES, (i + 1) * FIELD_BYTES));
-    if (x >= Q) throw new RangeError('proof coordinate >= q');
+  for (let i = 0; i < PROOF_COORDINATES; i++) {
+    const x = assertBaseField(bytesToBigInt(bytes.subarray(i * FIELD_BYTES, (i + 1) * FIELD_BYTES)));
     c.push(x.toString(10));
   }
   return {
