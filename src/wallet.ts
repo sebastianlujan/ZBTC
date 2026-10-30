@@ -141,6 +141,12 @@ interface WalletFile {
   locks: Lock[];
 }
 
+function assertTransferAmount(amount: bigint): void {
+  if (typeof amount !== 'bigint') throw new TypeError('amount must be a bigint (integer units)');
+  if (amount <= 0n) throw new RangeError('amount must be > 0');
+  if (amount > MAX_VALUE) throw new RangeError('amount must be < 2^64');
+}
+
 function sumValues(notes: readonly NoteView[]): bigint {
   return notes.reduce((s, n) => s + n.v, 0n);
 }
@@ -470,9 +476,7 @@ export class Wallet {
   async buildTransfer(req: TransferRequest): Promise<TransferResult> {
     const { replay, rpc, amount, feeWallet } = req;
     const hooks = req.hooks ?? {};
-    if (typeof amount !== 'bigint') throw new TypeError('amount must be a bigint (integer units)');
-    if (amount <= 0n) throw new RangeError('amount must be > 0');
-    if (amount > MAX_VALUE) throw new RangeError('amount must be < 2^64');
+    assertTransferAmount(amount);
     const dest = typeof req.to === 'string' ? decodeAddress(req.to) : req.to;
 
     // Anchor: the tip by default. The proof uses the tree state at stateHeight.
