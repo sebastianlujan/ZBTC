@@ -68,6 +68,9 @@ export const ENVELOPE_BYTES = OFF_PROOF + PROOF_BYTES; // 572
 export const H_BODY_DOMAIN = 'zbtc/v1/body';
 export const H_BODY_BYTES = 31;
 
+/** Domain tag of the replay state digest that independent clients compare. */
+export const STATE_DIGEST_DOMAIN = 'zbtc/v1/state';
+
 // ---- Key derivation ----
 export const KDF_SALT = 'zbtc/v1';
 export const KDF_INFO_SPEND = 'spend';

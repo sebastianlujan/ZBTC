@@ -9,7 +9,17 @@
 import { readFileSync } from 'node:fs';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { extractEnvelope, parse, type Envelope, type Extracted, type TxLike } from './codec.js';
-import { BODY_BYTES, CIRCUITS, DEPTH, K_MIN, MAX_HEIGHT, MAX_LEAVES, MAX_VALUE, W } from './constants.js';
+import {
+  BODY_BYTES,
+  CIRCUITS,
+  DEPTH,
+  K_MIN,
+  MAX_HEIGHT,
+  MAX_LEAVES,
+  MAX_VALUE,
+  STATE_DIGEST_DOMAIN,
+  W,
+} from './constants.js';
 import { bigIntToBytes, bytesToHex, cm, hBody, hexToBytes, isCanonicalDecimal, isField } from './crypto.js';
 import { bytesToProof, publicSignalsOf, verifyWithVkey, type VerificationKey } from './prover.js';
 import { RPC_INVALID_ADDRESS_OR_KEY, RPC_INVALID_PARAMETER, RpcError, type BitcoinRpc } from './rpc.js';
@@ -220,7 +230,7 @@ function u32le(x: number): Uint8Array {
 
 /** tipHash at S-1, where there is no block. */
 const GENESIS_TIP_HASH = new Uint8Array(32);
-const STATE_DOMAIN = new TextEncoder().encode('zbtc/v1/state');
+const STATE_DOMAIN = new TextEncoder().encode(STATE_DIGEST_DOMAIN);
 
 export class Replay {
   readonly genesis: Genesis;
