@@ -137,6 +137,9 @@ export interface TransferResult {
   spent: NoteView[];
 }
 
+/** A note of ours already in the tree, before its state is derived. */
+type TreeNote = Pick<NoteView, 'source' | 'v' | 'rseed' | 'cm' | 'txid'> & { pos: number; height: number };
+
 interface WalletFile {
   seed: string;
   locks: Lock[];
@@ -409,39 +412,44 @@ export class Wallet {
   /** Derived notes. Never throws on foreign or malformed data: it is skipped silently. */
   async view({ replay, rpc }: { replay: Replay; rpc: BitcoinRpc }): Promise<WalletView> {
     const released = await this.maintainLocks(replay, rpc);
-    const { owner, skNf, skEnc } = this.keys;
-    const tip = replay.tip;
-    const tipSize = replay.treeSizeAt(tip) ?? 0;
     const locked = this.lockedNfs();
-    const notes: NoteView[] = [];
-
-    const confirmedState = (pos: number, k: number, nf: bigint): NoteState => {
-      if (replay.isSpent(nf)) return 'spent';
-      if (locked.has(nf.toString())) return 'pending-spend';
-      if (k >= K_MIN && tipSize > pos) return 'spendable';
-      return 'confirmed';
-    };
-
-    // Genesis notes: plaintext inventory, matched by owner.
-    for (const g of replay.genesisOutputs()) {
-      if (g.owner !== owner || noteCm(g.v, owner, g.rseed) !== g.cm) continue;
-      const height = replay.baseHeight;
-      const k = tip - height + 1;
-      const nf = noteNf(skNf, g.rseed, g.pos);
-      notes.push({ state: confirmedState(g.pos, k, nf), source: 'genesis', v: g.v, rseed: g.rseed, cm: g.cm, pos: g.pos, height, confirmations: k, nf });
-    }
-
-    // Accepted transfer outputs: trial-decrypt, then re-check cm with our owner.
-    for (const o of replay.outputs()) {
-      const pt = decryptNote(skEnc, o.epk, o.ct, o.cm);
-      if (!pt || !noteMatches(pt.v, owner, pt.rseed, o.cm)) continue;
-      const k = tip - o.height + 1;
-      const nf = noteNf(skNf, pt.rseed, o.pos);
-      notes.push({ state: confirmedState(o.pos, k, nf), source: 'transfer', v: pt.v, rseed: pt.rseed, cm: o.cm, pos: o.pos, height: o.height, confirmations: k, nf, txid: o.txid });
-    }
-
+    const notes = [...this.genesisNotes(replay), ...this.transferNotes(replay)].map((n) =>
+      this.withState(n, replay, locked),
+    );
     notes.push(...(await this.mempoolCandidates(replay, rpc)));
     return { notes, released };
+  }
+
+  /** Genesis notes: plaintext inventory, matched by owner. */
+  private genesisNotes(replay: Replay): TreeNote[] {
+    const { owner } = this.keys;
+    return replay
+      .genesisOutputs()
+      .filter((g) => g.owner === owner && noteCm(g.v, owner, g.rseed) === g.cm)
+      .map((g) => ({ source: 'genesis', v: g.v, rseed: g.rseed, cm: g.cm, pos: g.pos, height: replay.baseHeight }));
+  }
+
+  /** Accepted transfer outputs we can decrypt. */
+  private transferNotes(replay: Replay): TreeNote[] {
+    const notes: TreeNote[] = [];
+    for (const o of replay.outputs()) {
+      const pt = this.decryptOwn(o.epk, o.ct, o.cm);
+      if (!pt) continue;
+      notes.push({ source: 'transfer', v: pt.v, rseed: pt.rseed, cm: o.cm, pos: o.pos, height: o.height, txid: o.txid });
+    }
+    return notes;
+  }
+
+  /** Adds the nullifier, confirmations and state of a note in the tree, as of the replay tip. */
+  private withState(note: TreeNote, replay: Replay, locked: ReadonlySet<string>): NoteView {
+    const confirmations = replay.tip - note.height + 1;
+    const nf = noteNf(this.keys.skNf, note.rseed, note.pos);
+    const isInTipTree = (replay.treeSizeAt(replay.tip) ?? 0) > note.pos;
+    let state: NoteState = 'confirmed';
+    if (replay.isSpent(nf)) state = 'spent';
+    else if (locked.has(nf.toString())) state = 'pending-spend';
+    else if (confirmations >= K_MIN && isInTipTree) state = 'spendable';
+    return { state, ...note, confirmations, nf };
   }
 
   /** Mempool candidates: only envelopes that would be valid in the next block. */
