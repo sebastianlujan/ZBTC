@@ -17,6 +17,15 @@ const ZBTC_DIR = path.resolve(process.env.ZBTC_DIR ?? '.zbtc');
 const CONFIG_PATH = path.join(ZBTC_DIR, 'config.json');
 const WALLETS_DIR = path.join(ZBTC_DIR, 'wallets');
 
+const DEFAULT_DATADIR = '.regtest';
+// 18543 rather than 18443: other local services often occupy the regtest default.
+const DEFAULT_RPC_PORT = 18543;
+const MINER_WALLET = 'miner';
+/** Coinbase outputs mature after 100 blocks, so mining 101 makes the first one spendable. */
+const INITIAL_BLOCKS = 101;
+/** BTC sent to each new fee wallet; it pays Bitcoin fees only. */
+const FEE_WALLET_FUNDING_BTC = 1;
+
 interface Config {
   datadir: string;
   rpcPort: number;
@@ -26,7 +35,8 @@ interface Config {
   minerAddress: string;
 }
 
-function rel(p: string): string {
+/** Path relative to the working directory, or absolute when outside it. */
+function relativeToCwd(p: string): string {
   const r = path.relative(process.cwd(), p);
   return r.startsWith('..') ? p : r;
 }
@@ -53,7 +63,8 @@ async function freshReplay(c: Config, rpc: BitcoinRpc): Promise<Replay> {
   return Replay.fresh(rpc, replayOptionsFromFiles(path.resolve(c.genesisPath), path.resolve(c.vkeyPath)));
 }
 
-function flag(args: string[], name: string): string | undefined {
+/** Removes `name <value>` from args and returns the value. */
+function takeFlag(args: string[], name: string): string | undefined {
   const i = args.indexOf(name);
   if (i < 0) return undefined;
   const v = args[i + 1];
@@ -61,8 +72,13 @@ function flag(args: string[], name: string): string | undefined {
   return v;
 }
 
-function hex8(x: bigint): string {
+/** First 4 bytes of a field element, in hex, for display. */
+function shortHex(x: bigint): string {
   return bytesToHex(bigIntToBytes(x)).slice(0, 8);
+}
+
+function feeWalletOf(name: string): string {
+  return `${name}-fee`;
 }
 
 function parseUnits(s: string): bigint {
@@ -77,37 +93,36 @@ function stateLabel(n: NoteView): string {
 // ---- Commands ----
 
 async function cmdInit(args: string[]): Promise<void> {
-  const datadir = flag(args, '--datadir') ?? '.regtest';
-  // 18543 rather than 18443: other local services often occupy the regtest default.
-  const rpcPort = Number(flag(args, '--rpcport') ?? '18543');
+  const datadir = takeFlag(args, '--datadir') ?? DEFAULT_DATADIR;
+  const rpcPort = Number(takeFlag(args, '--rpcport') ?? DEFAULT_RPC_PORT);
   const rpc = new BitcoinRpc({ port: rpcPort, datadir: path.resolve(datadir) });
-  await ensureWallet(rpc, 'miner');
-  const minerAddress = await rpc.wallet('miner').getNewAddress();
-  await rpc.generateToAddress(101, minerAddress);
+  await ensureWallet(rpc, MINER_WALLET);
+  const minerAddress = await rpc.wallet(MINER_WALLET).getNewAddress();
+  await rpc.generateToAddress(INITIAL_BLOCKS, minerAddress);
   const config: Config = {
     datadir,
     rpcPort,
-    genesisPath: rel(path.join(ZBTC_DIR, 'genesis.json')),
-    vkeyPath: rel(CIRCUITS.main.vkey),
-    minerWallet: 'miner',
+    genesisPath: relativeToCwd(path.join(ZBTC_DIR, 'genesis.json')),
+    vkeyPath: relativeToCwd(CIRCUITS.main.vkey),
+    minerWallet: MINER_WALLET,
     minerAddress,
   };
   mkdirSync(ZBTC_DIR, { recursive: true });
   writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2) + '\n');
-  console.log(`initialized ${rel(CONFIG_PATH)}; height ${await rpc.getBlockCount()}`);
+  console.log(`initialized ${relativeToCwd(CONFIG_PATH)}; height ${await rpc.getBlockCount()}`);
 }
 
 async function cmdWalletNew(name: string): Promise<void> {
   const c = loadConfig();
   const rpc = rpcOf(c);
   const w = Wallet.create(WALLETS_DIR, name);
-  const fee = `${name}-fee`;
+  const fee = feeWalletOf(name);
   await ensureWallet(rpc, fee);
   await rpc.loadWallet(c.minerWallet);
-  await rpc.wallet(c.minerWallet).sendToAddress(await rpc.wallet(fee).getNewAddress(), 1);
+  await rpc.wallet(c.minerWallet).sendToAddress(await rpc.wallet(fee).getNewAddress(), FEE_WALLET_FUNDING_BTC);
   await rpc.generateToAddress(1, c.minerAddress);
   console.log(`wallet ${name}: ${w.address()}`);
-  console.log(`fee wallet ${fee}: funded with 1 BTC (pays Bitcoin fees only)`);
+  console.log(`fee wallet ${fee}: funded with ${FEE_WALLET_FUNDING_BTC} BTC (pays Bitcoin fees only)`);
 }
 
 async function cmdGenesis(args: string[]): Promise<void> {
@@ -146,7 +161,7 @@ async function cmdSend(from: string, to: string, amountStr: string): Promise<voi
   const replay = await freshReplay(c, rpc);
   const wallet = Wallet.load(WALLETS_DIR, from);
   const dest = Wallet.exists(WALLETS_DIR, to) ? Wallet.load(WALLETS_DIR, to).address() : to;
-  const feeWallet = `${from}-fee`;
+  const feeWallet = feeWalletOf(from);
   await rpc.loadWallet(feeWallet);
   const res = await wallet.buildTransfer({ replay, rpc, to: dest, amount: parseUnits(amountStr), feeWallet });
   console.log(`txid: ${res.txid}`);
@@ -168,7 +183,7 @@ async function cmdNotes(name: string): Promise<void> {
     n.v.toString(),
     n.pos?.toString() ?? '-',
     n.height?.toString() ?? '-',
-    n.nf !== undefined ? hex8(n.nf) : '-',
+    n.nf !== undefined ? shortHex(n.nf) : '-',
   ]);
   const head = ['state', 'units', 'pos', 'height', 'nf'];
   const widths = head.map((h, i) => Math.max(h.length, ...rows.map((r) => r[i].length)));
@@ -214,7 +229,7 @@ async function cmdIndex(args: string[]): Promise<void> {
 function usage(): string {
   return [
     'usage: zbtc <command>',
-    '  init [--datadir .regtest] [--rpcport 18543]',
+    `  init [--datadir ${DEFAULT_DATADIR}] [--rpcport ${DEFAULT_RPC_PORT}]`,
     '  wallet new <name>',
     '  address <name>',
     '  genesis <name>=<units> [...] [--force]',
