@@ -2,19 +2,19 @@
 // h_body, real Groth16 proof) and byte-level mutators for adversarial cases.
 import { bn254 } from '@noble/curves/bn254.js';
 import { randomBytes } from '@noble/hashes/utils.js';
+import { envelopeHBody, parse, serialize, type Envelope } from '../../src/codec.js';
 import {
+  MAX_VALUE,
   OFF_CM,
   OFF_CT,
   OFF_EPK,
   OFF_H_ANCHOR,
   OFF_NF,
   OFF_PROOF,
-  parse,
-  serialize,
-  type Envelope,
-  envelopeHBody,
-} from '../../src/codec.js';
-import { MAX_VALUE, PROOF_BYTES, R, type CircuitName } from '../../src/constants.js';
+  PROOF_BYTES,
+  R,
+  type CircuitName,
+} from '../../src/constants.js';
 import { bigIntToBytes, bytesToBigInt, encryptNote, randomField } from '../../src/crypto.js';
 import {
   buildCircuitInput,

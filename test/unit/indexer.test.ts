@@ -3,8 +3,8 @@
 import { sha256 } from '@noble/hashes/sha2.js';
 import { utf8ToBytes } from '@noble/hashes/utils.js';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { envelopeScript, OFF_CT, OFF_NF, OFF_VERSION } from '../../src/codec.js';
-import { R } from '../../src/constants.js';
+import { envelopeScript } from '../../src/codec.js';
+import { OFF_CT, OFF_NF, OFF_VERSION, R } from '../../src/constants.js';
 import { bytesToHex, randomField } from '../../src/crypto.js';
 import {
   ChainMismatchError,

@@ -43,25 +43,6 @@ import {
 import { bigIntToBytes, bytesToBigInt, hBody, hexToBytes, isField } from './crypto.js';
 import { bytesToProof } from './prover.js';
 
-export {
-  BODY_BYTES,
-  CT_BYTES,
-  ENVELOPE_BYTES,
-  EPK_BYTES,
-  OFF_CM,
-  OFF_CT,
-  OFF_EPK,
-  OFF_H_ANCHOR,
-  OFF_MAGIC,
-  OFF_N_IN,
-  OFF_N_OUT,
-  OFF_NF,
-  OFF_PROOF,
-  OFF_TYPE,
-  OFF_VERSION,
-  PROOF_BYTES,
-};
-
 // ---- Script opcodes ----
 const OP_RETURN = 0x6a;
 /** Opcodes 0x01..0x4b push that many bytes. */

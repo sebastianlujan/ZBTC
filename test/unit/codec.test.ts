@@ -6,6 +6,16 @@ import {
   envelopeHBody,
   envelopeScript,
   extractEnvelope,
+  parse,
+  proofPointsError,
+  serialize,
+  serializeBody,
+  type TxLike,
+} from '../../src/codec.js';
+import {
+  BODY_BYTES,
+  CIRCUITS,
+  ENVELOPE_BYTES,
   OFF_CM,
   OFF_N_IN,
   OFF_N_OUT,
@@ -13,13 +23,9 @@ import {
   OFF_PROOF,
   OFF_TYPE,
   OFF_VERSION,
-  parse,
-  proofPointsError,
-  serialize,
-  serializeBody,
-  type TxLike,
-} from '../../src/codec.js';
-import { BODY_BYTES, CIRCUITS, ENVELOPE_BYTES, Q, R } from '../../src/constants.js';
+  Q,
+  R,
+} from '../../src/constants.js';
 import { bigIntToBytes, bytesToHex, cm, hBody, randomField } from '../../src/crypto.js';
 import { bytesToProof, dummyInput, publicSignalsOf, shutdownProver, verify } from '../../src/prover.js';
 import { NoteTree } from '../../src/tree.js';
