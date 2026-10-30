@@ -205,24 +205,13 @@ function fail(reason: string): ParseResult {
 export function parse(bytes: Uint8Array): ParseResult {
   if (!(bytes instanceof Uint8Array)) return fail('not bytes');
   if (bytes.length !== ENVELOPE_BYTES) return fail(`length ${bytes.length} != ${ENVELOPE_BYTES}`);
-  for (let i = 0; i < MAGIC.length; i++) {
-    if (bytes[OFF_MAGIC + i] !== MAGIC[i]) return fail('bad magic');
-  }
-  if (bytes[OFF_VERSION] !== VERSION) return fail(`bad version ${bytes[OFF_VERSION]}`);
-  if (bytes[OFF_TYPE] !== TYPE_TRANSFER) return fail(`bad type ${bytes[OFF_TYPE]}`);
-  if (bytes[OFF_N_IN] !== N_IN || bytes[OFF_N_OUT] !== N_OUT) {
-    return fail(`bad counts ${bytes[OFF_N_IN]}/${bytes[OFF_N_OUT]}`);
-  }
+  const headerErr = headerError(bytes);
+  if (headerErr) return fail(headerErr);
 
-  const field = (off: number, what: string): bigint | string => {
-    const x = bytesToBigInt(bytes.subarray(off, off + FIELD_BYTES));
-    return isField(x) ? x : `${what} >= r`;
-  };
-  const nf0 = field(OFF_NF, 'nf[0]');
-  const nf1 = field(OFF_NF + FIELD_BYTES, 'nf[1]');
-  const cm0 = field(OFF_CM, 'cm[0]');
-  const cm1 = field(OFF_CM + FIELD_BYTES, 'cm[1]');
-  for (const x of [nf0, nf1, cm0, cm1]) if (typeof x === 'string') return fail(x);
+  const nf = readFieldPair(bytes, OFF_NF, 'nf');
+  if (typeof nf === 'string') return fail(nf);
+  const cm = readFieldPair(bytes, OFF_CM, 'cm');
+  if (typeof cm === 'string') return fail(cm);
 
   const proofBytes = bytes.slice(OFF_PROOF, OFF_PROOF + PROOF_BYTES);
   const proofErr = proofPointsError(proofBytes);
@@ -233,13 +222,36 @@ export function parse(bytes: Uint8Array): ParseResult {
     ok: true,
     env: {
       hAnchor,
-      nf: [nf0 as bigint, nf1 as bigint],
-      cm: [cm0 as bigint, cm1 as bigint],
-      epk: [bytes.slice(OFF_EPK, OFF_EPK + EPK_BYTES), bytes.slice(OFF_EPK + EPK_BYTES, OFF_EPK + 2 * EPK_BYTES)],
-      ct: [bytes.slice(OFF_CT, OFF_CT + CT_BYTES), bytes.slice(OFF_CT + CT_BYTES, OFF_CT + 2 * CT_BYTES)],
+      nf,
+      cm,
+      epk: slicePair(bytes, OFF_EPK, EPK_BYTES),
+      ct: slicePair(bytes, OFF_CT, CT_BYTES),
       proofBytes,
     },
   };
+}
+
+/** Why magic, version, type or counts are not the only values v1 accepts, or null. */
+function headerError(bytes: Uint8Array): string | null {
+  if (!startsWithMagic(bytes.subarray(OFF_MAGIC))) return 'bad magic';
+  if (bytes[OFF_VERSION] !== VERSION) return `bad version ${bytes[OFF_VERSION]}`;
+  if (bytes[OFF_TYPE] !== TYPE_TRANSFER) return `bad type ${bytes[OFF_TYPE]}`;
+  if (bytes[OFF_N_IN] !== N_IN || bytes[OFF_N_OUT] !== N_OUT) {
+    return `bad counts ${bytes[OFF_N_IN]}/${bytes[OFF_N_OUT]}`;
+  }
+  return null;
+}
+
+/** The two field elements at `offset`, or why the first non-canonical one (>= r) is rejected. */
+function readFieldPair(bytes: Uint8Array, offset: number, name: string): [bigint, bigint] | string {
+  const read = (i: number) => bytesToBigInt(bytes.subarray(offset + i * FIELD_BYTES, offset + (i + 1) * FIELD_BYTES));
+  const pair: [bigint, bigint] = [read(0), read(1)];
+  const bad = pair.findIndex((x) => !isField(x));
+  return bad < 0 ? pair : `${name}[${bad}] >= r`;
+}
+
+function slicePair(bytes: Uint8Array, offset: number, size: number): [Uint8Array, Uint8Array] {
+  return [bytes.slice(offset, offset + size), bytes.slice(offset + size, offset + 2 * size)];
 }
 
 // ---- Extraction from a bitcoind transaction ----
