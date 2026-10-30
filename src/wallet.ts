@@ -32,7 +32,7 @@ import {
   verify,
   type SpendNote,
 } from './prover.js';
-import { buildEnvelopeTx, type BitcoinRpc, type Outpoint } from './rpc.js';
+import { buildEnvelopeTx, sendEnvelopeTx, type BitcoinRpc, type Outpoint } from './rpc.js';
 import { NoteTree } from './tree.js';
 
 /** Blocks after which a lock whose carrier left the mempool is released. */
@@ -514,10 +514,7 @@ export class Wallet {
 
     // 6. Carrier, broadcast, lock.
     const carrier = await buildEnvelopeTx(rpc, feeWallet, envelope);
-    if (!hooks.noPublish) {
-      const sent = await rpc.sendRawTransaction(carrier.hex);
-      if (sent !== carrier.txid) throw new Error(`sendrawtransaction returned ${sent}`);
-    }
+    if (!hooks.noPublish) await sendEnvelopeTx(rpc, carrier);
     this.locks.push({
       nfs: env.nf.map((n) => n.toString()),
       txid: carrier.txid,

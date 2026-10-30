@@ -250,10 +250,15 @@ export async function buildEnvelopeTx(
   return { txid: decoded.txid, hex: signed.hex, vsize: decoded.vsize, inputs };
 }
 
+/** sendrawtransaction of a built carrier; throws unless bitcoind returns its txid. */
+export async function sendEnvelopeTx(rpc: BitcoinRpc, tx: EnvelopeTx): Promise<void> {
+  const txid = await rpc.sendRawTransaction(tx.hex);
+  if (txid !== tx.txid) throw new Error(`sendrawtransaction returned ${txid}, expected ${tx.txid}`);
+}
+
 /** buildEnvelopeTx + sendrawtransaction. */
 export async function publishEnvelope(rpc: BitcoinRpc, walletName: string, bytes: Uint8Array): Promise<EnvelopeTx> {
   const tx = await buildEnvelopeTx(rpc, walletName, bytes);
-  const txid = await rpc.sendRawTransaction(tx.hex);
-  if (txid !== tx.txid) throw new Error(`sendrawtransaction returned ${txid}, expected ${tx.txid}`);
+  await sendEnvelopeTx(rpc, tx);
   return tx;
 }
