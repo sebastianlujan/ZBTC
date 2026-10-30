@@ -6,7 +6,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'n
 import path from 'node:path';
 import { randomBytes } from '@noble/hashes/utils.js';
 import { extractEnvelope, parse, serialize, serializeBody, type Envelope } from './codec.js';
-import { K_MIN, MAX_VALUE, W } from './constants.js';
+import { K_MIN, MAX_VALUE, N_IN, W } from './constants.js';
 import {
   bytesToHex,
   cm as noteCm,
@@ -140,6 +140,46 @@ export interface TransferResult {
 interface WalletFile {
   seed: string;
   locks: Lock[];
+}
+
+function sumValues(notes: readonly NoteView[]): bigint {
+  return notes.reduce((s, n) => s + n.v, 0n);
+}
+
+/**
+ * Notes that can be spent at an anchor whose tree holds `sizeAtAnchor` leaves
+ * (only those have a witness there), by ascending value, then position.
+ */
+function usableNotes(notes: readonly NoteView[], sizeAtAnchor: number, ignoreLocks = false): NoteView[] {
+  return notes
+    .filter((n) => n.state === 'spendable' || (ignoreLocks && n.state === 'pending-spend'))
+    .filter((n) => (n.pos as number) < sizeAtAnchor)
+    .sort((a, b) => (a.v === b.v ? (a.pos as number) - (b.pos as number) : a.v < b.v ? -1 : 1));
+}
+
+/**
+ * Default policy: the smallest single note covering the amount, else the two
+ * largest. `usable` must be sorted as usableNotes() returns it.
+ */
+function selectInputs(
+  usable: NoteView[],
+  amount: bigint,
+  selectNotes?: TransferHooks['selectNotes'],
+): NoteView[] {
+  if (selectNotes) {
+    const chosen = selectNotes(usable);
+    if (chosen.length < 1 || chosen.length > N_IN || chosen.some((n) => !usable.includes(n))) {
+      throw new Error('selectNotes must return 1 or 2 of the usable notes');
+    }
+    return chosen;
+  }
+  const single = usable.find((n) => n.v >= amount);
+  if (single) return [single];
+  const largestTwo = usable.slice(-2);
+  if (largestTwo.length < 2 || sumValues(largestTwo) < amount) {
+    throw new Error(`insufficient funds: need ${amount}, spendable ${sumValues(usable)}`);
+  }
+  return largestTwo;
 }
 
 export class Wallet {
@@ -327,8 +367,7 @@ export class Wallet {
   }
 
   static balanceOf(notes: readonly NoteView[]): Balance {
-    const sum = (states: NoteState[]) =>
-      notes.filter((n) => states.includes(n.state)).reduce((s, n) => s + n.v, 0n);
+    const sum = (states: NoteState[]) => sumValues(notes.filter((n) => states.includes(n.state)));
     const spendable = sum(['spendable']);
     const pending = sum(['confirmed', 'pending-spend']);
     return { spendable, pending, candidate: sum(['candidate']), total: spendable + pending };
@@ -353,27 +392,11 @@ export class Wallet {
     const stateHeight = Math.min(Math.max(anchorHeight, replay.baseHeight), replay.tip);
     const sizeAtAnchor = replay.treeSizeAt(stateHeight) ?? 0;
 
-    // 1. Select one note covering the amount (smallest such), else the two largest.
-    //    Only notes that exist in the tree at the anchor have a witness there.
+    // 1. Select the input notes.
     const { notes } = await this.view({ replay, rpc });
-    const usable = notes
-      .filter((n) => n.state === 'spendable' || (hooks.ignoreLocks && n.state === 'pending-spend'))
-      .filter((n) => (n.pos as number) < sizeAtAnchor)
-      .sort((a, b) => (a.v === b.v ? (a.pos as number) - (b.pos as number) : a.v < b.v ? -1 : 1));
-    let selected = hooks.selectNotes ? hooks.selectNotes(usable) : usable.filter((n) => n.v >= amount).slice(0, 1);
-    if (hooks.selectNotes && (selected.length < 1 || selected.length > 2 || selected.some((n) => !usable.includes(n)))) {
-      throw new Error('selectNotes must return 1 or 2 of the usable notes');
-    }
-    if (selected.length === 0) {
-      const top2 = usable.slice(-2);
-      if (top2.length < 2 || top2[0].v + top2[1].v < amount) {
-        const have = usable.reduce((s, n) => s + n.v, 0n);
-        throw new Error(`insufficient funds: need ${amount}, spendable ${have}`);
-      }
-      selected = top2;
-    }
-    const totalIn = selected.reduce((s, n) => s + n.v, 0n);
-    const change = totalIn - amount;
+    const usable = usableNotes(notes, sizeAtAnchor, hooks.ignoreLocks);
+    const selected = selectInputs(usable, amount, hooks.selectNotes);
+    const change = sumValues(selected) - amount;
     if (change > MAX_VALUE) throw new RangeError('change does not fit in 64 bits');
 
     // 2. Witnesses, checked locally against R[stateHeight].
