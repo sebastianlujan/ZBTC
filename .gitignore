@@ -6,3 +6,7 @@ build/
 *.zkey
 *.wtns
 .atl/
+
+# Local links to existing build artifacts and dependencies.
+/v1/node_modules
+/v1/build
