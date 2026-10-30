@@ -40,8 +40,10 @@ export const Q = 218882428718392752222464057452572750886963111572978236626890378
 export const FIELD_BYTES = 32;
 export const PROOF_BYTES = 256;
 export const EPK_BYTES = 32;
-/** AEAD plaintext: v (8 bytes) || rseed (32 bytes). Exact encoding is fixed in the codec (M2). */
-export const NOTE_PLAINTEXT_BYTES = 40;
+/** v as u64 LE: the first part of the AEAD plaintext. */
+export const NOTE_VALUE_BYTES = 8;
+/** AEAD plaintext: v (u64 LE) || rseed (32 B BE). */
+export const NOTE_PLAINTEXT_BYTES = NOTE_VALUE_BYTES + FIELD_BYTES; // 40
 export const AEAD_TAG_BYTES = 16;
 export const CT_BYTES = NOTE_PLAINTEXT_BYTES + AEAD_TAG_BYTES; // 56
 
@@ -68,6 +70,14 @@ export const H_BODY_BYTES = 31;
 export const KDF_SALT = 'zbtc/v1';
 export const KDF_INFO_SPEND = 'spend';
 export const KDF_INFO_ENC = 'enc';
+/** Seeds shorter than this are refused. */
+export const MIN_SEED_BYTES = 16;
+/** Bytes reduced mod r to derive a scalar: 64 keep the bias below 2^-250. */
+export const WIDE_SCALAR_BYTES = 64;
+/** X25519 secret key (sk_enc). */
+export const SK_ENC_BYTES = 32;
+/** ChaCha20-Poly1305 key derived per note. */
+export const NOTE_KEY_BYTES = 32;
 /** HKDF salt for the per-note AEAD key: k = HKDF(shared, salt, epk || pkEnc, 32). */
 export const NOTE_KDF_SALT = 'zbtc/v1/note';
 
