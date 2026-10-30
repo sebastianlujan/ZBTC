@@ -186,8 +186,11 @@ export class ChainMismatchError extends Error {
 
 /** Reads genesis.json and (by default) the production vkey from disk. */
 export function replayOptionsFromFiles(genesisPath: string, vkeyPath: string = CIRCUITS.main.vkey): ReplayOptions {
-  const genesisBytes = new Uint8Array(readFileSync(genesisPath));
-  const vkeyBytes = new Uint8Array(readFileSync(vkeyPath));
+  return replayOptionsFromBytes(new Uint8Array(readFileSync(genesisPath)), new Uint8Array(readFileSync(vkeyPath)));
+}
+
+/** Parses the exact genesis.json and vkey.json bytes (both part of the profile hash). */
+export function replayOptionsFromBytes(genesisBytes: Uint8Array, vkeyBytes: Uint8Array): ReplayOptions {
   return {
     genesis: loadGenesis(new TextDecoder().decode(genesisBytes)),
     genesisBytes,

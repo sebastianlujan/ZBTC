@@ -1,13 +1,13 @@
 // A regtest "world": one bitcoind, a miner, shielded wallets with funded fee
 // wallets, a genesis inventory and a shared incremental replay.
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { randomBytes, utf8ToBytes } from '@noble/hashes/utils.js';
+import { randomBytes } from '@noble/hashes/utils.js';
 import { CIRCUITS } from '../../src/constants.js';
 import { randomField } from '../../src/crypto.js';
-import { loadGenesis, makeGenesis, Replay, type ReplayOptions } from '../../src/indexer.js';
-import type { VerificationKey } from '../../src/prover.js';
+import { makeGenesis, Replay, type ReplayOptions } from '../../src/indexer.js';
 import { Wallet, type Balance, type TransferHooks, type TransferResult, type WalletView } from '../../src/wallet.js';
+import { replayOptionsFor } from './fixtures.js';
 import { fundWallet, initMiner, mine, startNode, type NodeOptions, type RegtestNode } from './regtest.js';
 
 export interface WorldOptions {
@@ -85,13 +85,7 @@ export async function makeWorld(o: WorldOptions): Promise<World> {
       ),
     );
 
-    const vkeyBytes = new Uint8Array(readFileSync(CIRCUITS.main.vkey));
-    const opts: ReplayOptions = {
-      genesis: loadGenesis(genesisText),
-      genesisBytes: utf8ToBytes(genesisText),
-      vkey: JSON.parse(new TextDecoder().decode(vkeyBytes)) as VerificationKey,
-      vkeyBytes,
-    };
+    const opts = replayOptionsFor(genesisText);
     const shared = new Replay(opts);
     const replay = async () => {
       await shared.sync(node.rpc);
