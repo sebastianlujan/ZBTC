@@ -215,7 +215,8 @@ function u32le(x: number): Uint8Array {
   return b;
 }
 
-const ZERO32 = new Uint8Array(32);
+/** tipHash at S-1, where there is no block. */
+const GENESIS_TIP_HASH = new Uint8Array(32);
 const STATE_DOMAIN = new TextEncoder().encode('zbtc/v1/state');
 
 export class Replay {
@@ -573,30 +574,11 @@ export class Replay {
    */
   digest(): Digest {
     const H = this.tipHeight;
-    const tipHash = this.tipHash ? hexToBytes(this.tipHash) : ZERO32;
+    const tipHash = this.tipHash ? hexToBytes(this.tipHash) : GENESIS_TIP_HASH;
     const root = bigIntToBytes(this.roots.get(H) as bigint);
-
-    const nfHasher = sha256.create();
-    for (const n of [...this.nullifiers].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))) {
-      nfHasher.update(bigIntToBytes(n));
-    }
-    const nfHash = nfHasher.digest();
-
-    const rootsHasher = sha256.create();
-    for (let h = this.baseHeight; h <= H; h++) {
-      rootsHasher.update(u32le(h)).update(bigIntToBytes(this.roots.get(h) as bigint));
-    }
-    const rootsHash = rootsHasher.digest();
-
-    const histHasher = sha256.create();
-    for (const e of this.acceptedList) {
-      histHasher
-        .update(u32le(e.height))
-        .update(u32le(e.txIndex))
-        .update(hexToBytes(e.txid))
-        .update(bigIntToBytes(e.hBody));
-    }
-    const histHash = histHasher.digest();
+    const nfHash = this.nullifierHash();
+    const rootsHash = this.rootHistoryHash();
+    const histHash = this.acceptedHistoryHash();
     const profile = this.profile();
 
     const d = sha256
@@ -624,4 +606,31 @@ export class Replay {
       profile: bytesToHex(profile),
     };
   }
+
+  /** Sorted, so it does not depend on the order nullifiers were inserted. */
+  private nullifierHash(): Uint8Array {
+    const hasher = sha256.create();
+    for (const n of [...this.nullifiers].sort(compareBigInt)) hasher.update(bigIntToBytes(n));
+    return hasher.digest();
+  }
+
+  private rootHistoryHash(): Uint8Array {
+    const hasher = sha256.create();
+    for (let h = this.baseHeight; h <= this.tipHeight; h++) {
+      hasher.update(u32le(h)).update(bigIntToBytes(this.roots.get(h) as bigint));
+    }
+    return hasher.digest();
+  }
+
+  private acceptedHistoryHash(): Uint8Array {
+    const hasher = sha256.create();
+    for (const e of this.acceptedList) {
+      hasher.update(u32le(e.height)).update(u32le(e.txIndex)).update(hexToBytes(e.txid)).update(bigIntToBytes(e.hBody));
+    }
+    return hasher.digest();
+  }
+}
+
+function compareBigInt(a: bigint, b: bigint): number {
+  return a < b ? -1 : a > b ? 1 : 0;
 }
