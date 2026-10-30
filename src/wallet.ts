@@ -171,6 +171,19 @@ function lockReleaseReason(lock: Lock, replay: Replay, mempool: ReadonlySet<stri
   return null;
 }
 
+/** Releases the bitcoind locks on the fee coins a wallet lock reserved. */
+async function unlockFundingCoins(rpc: BitcoinRpc, lock: Lock): Promise<void> {
+  try {
+    const feeWallet = rpc.wallet(lock.feeWallet);
+    const locked = await feeWallet.listLockUnspent();
+    const ours = locked.filter((o) => lock.fundingOutpoints.some((f) => f.txid === o.txid && f.vout === o.vout));
+    if (ours.length > 0) await feeWallet.lockUnspent(true, ours);
+  } catch {
+    // Best effort: bitcoind locks are in-memory and vanish on restart, and the
+    // coins may already be spent by the carrier.
+  }
+}
+
 /** Envelope bytes carried by a mempool tx, or null if it has none or left the mempool meanwhile. */
 async function mempoolEnvelopeBytes(rpc: BitcoinRpc, txid: string): Promise<Uint8Array | null> {
   let tx: RpcTx;
@@ -384,19 +397,6 @@ export class Wallet {
     return new Set(this.locks.flatMap((l) => l.nfs));
   }
 
-  private async unlockCoins(rpc: BitcoinRpc, lock: Lock): Promise<void> {
-    // Best effort: bitcoind locks are in-memory and vanish on restart, and the
-    // coins may already be spent by the carrier.
-    try {
-      const w = rpc.wallet(lock.feeWallet);
-      const locked = await w.listLockUnspent();
-      const mine = locked.filter((o) => lock.fundingOutpoints.some((f) => f.txid === o.txid && f.vout === o.vout));
-      if (mine.length > 0) await w.lockUnspent(true, mine);
-    } catch {
-      /* ignore */
-    }
-  }
-
   /** Releases every lock lockReleaseReason() selects and unlocks its fee coins. */
   private async maintainLocks(replay: Replay, rpc: BitcoinRpc): Promise<LockRelease[]> {
     if (this.locks.length === 0) return [];
@@ -407,7 +407,7 @@ export class Wallet {
       const reason = lockReleaseReason(lock, replay, mempool);
       if (reason) {
         released.push({ txid: lock.txid, reason });
-        await this.unlockCoins(rpc, lock);
+        await unlockFundingCoins(rpc, lock);
       } else {
         keep.push(lock);
       }
