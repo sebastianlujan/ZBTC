@@ -1,0 +1,29 @@
+{
+  "name": "zbtc",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Minimal shielded transfer layer anchored on Bitcoin regtest (simulated units, not native BTC)",
+  "scripts": {
+    "circuit": "bash scripts/circuit.sh",
+    "typecheck": "tsc --noEmit",
+    "test:unit": "vitest run test/unit test/circuit",
+    "test:e2e": "vitest run test/e2e",
+    "zbtc": "tsx src/cli.ts",
+    "demo": "bash scripts/demo.sh"
+  },
+  "dependencies": {
+    "@noble/ciphers": "2.4.0",
+    "@noble/curves": "2.4.0",
+    "@noble/hashes": "2.4.0",
+    "circomlib": "2.0.5",
+    "poseidon-lite": "0.3.0",
+    "snarkjs": "0.7.6"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "tsx": "4.23.15",
+    "typescript": "5.9.3",
+    "vitest": "3.2.7"
+  }
+}
