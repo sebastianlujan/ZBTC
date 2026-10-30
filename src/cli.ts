@@ -8,7 +8,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { CIRCUITS, ENVELOPE_BYTES } from './constants.js';
 import { bigIntToBytes, bytesToHex, randomField } from './crypto.js';
-import { makeGenesis, Replay, replayOptionsFromFiles } from './indexer.js';
+import { makeGenesis, Replay, replayOptionsFromFiles, type RejectedEntry } from './indexer.js';
 import { shutdownProver } from './prover.js';
 import { BitcoinRpc, RPC_WALLET_ERROR, RpcError } from './rpc.js';
 import { Wallet, type NoteView } from './wallet.js';
@@ -88,6 +88,30 @@ function parseUnits(s: string): bigint {
 
 function stateLabel(n: NoteView): string {
   return n.state === 'confirmed' ? `confirmed(${n.confirmations})` : n.state;
+}
+
+function noteRow(n: NoteView): string[] {
+  return [
+    stateLabel(n),
+    n.v.toString(),
+    n.pos?.toString() ?? '-',
+    n.height?.toString() ?? '-',
+    n.nf !== undefined ? shortHex(n.nf) : '-',
+  ];
+}
+
+/** Text table lines: the first column left-aligned, the others right-aligned. */
+function formatTable(head: string[], rows: string[][]): string[] {
+  const widths = head.map((h, i) => Math.max(h.length, ...rows.map((r) => r[i].length)));
+  const line = (r: string[]) => r.map((x, i) => (i === 0 ? x.padEnd(widths[i]) : x.padStart(widths[i]))).join('  ');
+  return [head, ...rows].map(line);
+}
+
+/** "CODE=count" for each rejection code, sorted by code. */
+function countsByCode(rejected: readonly RejectedEntry[]): string[] {
+  const counts = new Map<string, number>();
+  for (const r of rejected) counts.set(r.code, (counts.get(r.code) ?? 0) + 1);
+  return [...counts.entries()].sort(([a], [b]) => (a < b ? -1 : 1)).map(([code, n]) => `${code}=${n}`);
 }
 
 // ---- Commands ----
@@ -178,20 +202,9 @@ async function cmdNotes(name: string): Promise<void> {
   const replay = await freshReplay(c, rpc);
   const { notes, released } = await Wallet.load(WALLETS_DIR, name).view({ replay, rpc });
   for (const r of released) console.log(`lock on ${r.txid} released: ${r.reason}`);
-  const rows = notes.map((n) => [
-    stateLabel(n),
-    n.v.toString(),
-    n.pos?.toString() ?? '-',
-    n.height?.toString() ?? '-',
-    n.nf !== undefined ? shortHex(n.nf) : '-',
-  ]);
-  const head = ['state', 'units', 'pos', 'height', 'nf'];
-  const widths = head.map((h, i) => Math.max(h.length, ...rows.map((r) => r[i].length)));
-  const line = (r: string[]) => r.map((x, i) => (i === 0 ? x.padEnd(widths[i]) : x.padStart(widths[i]))).join('  ');
   console.log(`notes of ${name}:`);
-  console.log(line(head));
-  for (const r of rows) console.log(line(r));
-  if (rows.length === 0) console.log('(none)');
+  for (const line of formatTable(['state', 'units', 'pos', 'height', 'nf'], notes.map(noteRow))) console.log(line);
+  if (notes.length === 0) console.log('(none)');
 }
 
 async function cmdBalance(names: string[]): Promise<void> {
@@ -214,9 +227,7 @@ async function cmdIndex(args: string[]): Promise<void> {
   const replay = await freshReplay(c, rpc);
   const ms = performance.now() - t0;
   const d = replay.digest();
-  const codes = new Map<string, number>();
-  for (const r of replay.rejected) codes.set(r.code, (codes.get(r.code) ?? 0) + 1);
-  const codeList = [...codes.entries()].sort(([a], [b]) => (a < b ? -1 : 1)).map(([k, v]) => `${k}=${v}`);
+  const codeList = countsByCode(replay.rejected);
   console.log(`height: ${d.height} (replayed from ${replay.baseHeight + 1} in ${ms.toFixed(0)} ms)`);
   console.log(`tip: ${replay.tipHash ?? '(genesis)'}`);
   console.log(`root: ${d.root}`);
