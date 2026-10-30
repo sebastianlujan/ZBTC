@@ -21,6 +21,7 @@ import {
   randomField,
   type Address,
   type Keys,
+  type NotePlaintext,
 } from './crypto.js';
 import type { Replay } from './indexer.js';
 import {
@@ -32,7 +33,7 @@ import {
   verify,
   type SpendNote,
 } from './prover.js';
-import { buildEnvelopeTx, sendEnvelopeTx, type BitcoinRpc, type Outpoint } from './rpc.js';
+import { buildEnvelopeTx, sendEnvelopeTx, type BitcoinRpc, type Outpoint, type RpcTx } from './rpc.js';
 import { NoteTree } from './tree.js';
 
 /** Blocks after which a lock whose carrier left the mempool is released. */
@@ -139,6 +140,18 @@ export interface TransferResult {
 interface WalletFile {
   seed: string;
   locks: Lock[];
+}
+
+/** Envelope bytes carried by a mempool tx, or null if it has none or left the mempool meanwhile. */
+async function mempoolEnvelopeBytes(rpc: BitcoinRpc, txid: string): Promise<Uint8Array | null> {
+  let tx: RpcTx;
+  try {
+    tx = await rpc.getRawTransaction(txid, true);
+  } catch {
+    return null; // left the mempool meanwhile
+  }
+  const extracted = extractEnvelope(tx);
+  return extracted.kind === 'envelope' ? extracted.bytes : null;
 }
 
 function assertTransferAmount(amount: bigint): void {
@@ -427,33 +440,39 @@ export class Wallet {
       notes.push({ state: confirmedState(o.pos, k, nf), source: 'transfer', v: pt.v, rseed: pt.rseed, cm: o.cm, pos: o.pos, height: o.height, confirmations: k, nf, txid: o.txid });
     }
 
-    // Mempool candidates: only envelopes that would be valid in the next block.
-    for (const txid of await rpc.getRawMempool()) {
-      let tx;
-      try {
-        tx = await rpc.getRawTransaction(txid, true);
-      } catch {
-        continue; // left the mempool meanwhile
-      }
-      const ex = extractEnvelope(tx);
-      if (ex.kind !== 'envelope') continue;
-      const parsed = parse(ex.bytes);
-      if (!parsed.ok) continue;
-      const env = parsed.env;
-      let mineOut = false;
-      const outs: NoteView[] = [];
-      for (let k = 0; k < env.cm.length; k++) {
-        const pt = decryptNote(skEnc, env.epk[k], env.ct[k], env.cm[k]);
-        if (!pt || !noteMatches(pt.v, owner, pt.rseed, env.cm[k])) continue;
-        mineOut = true;
-        outs.push({ state: 'candidate', source: 'mempool', v: pt.v, rseed: pt.rseed, cm: env.cm[k], txid });
-      }
-      if (!mineOut) continue;
-      if (!(await replay.validate(ex.bytes, tip + 1)).ok) continue;
-      notes.push(...outs);
-    }
-
+    notes.push(...(await this.mempoolCandidates(replay, rpc)));
     return { notes, released };
+  }
+
+  /** Mempool candidates: only envelopes that would be valid in the next block. */
+  private async mempoolCandidates(replay: Replay, rpc: BitcoinRpc): Promise<NoteView[]> {
+    const candidates: NoteView[] = [];
+    for (const txid of await rpc.getRawMempool()) {
+      const bytes = await mempoolEnvelopeBytes(rpc, txid);
+      if (!bytes) continue;
+      const parsed = parse(bytes);
+      if (!parsed.ok) continue;
+      const mine = this.ownOutputs(parsed.env, txid);
+      // Validation verifies a proof: only pay for it when the envelope pays us.
+      if (mine.length === 0 || !(await replay.validate(bytes, replay.tip + 1)).ok) continue;
+      candidates.push(...mine);
+    }
+    return candidates;
+  }
+
+  private ownOutputs(env: Envelope, txid: string): NoteView[] {
+    const outputs: NoteView[] = [];
+    env.cm.forEach((cm, k) => {
+      const pt = this.decryptOwn(env.epk[k], env.ct[k], cm);
+      if (pt) outputs.push({ state: 'candidate', source: 'mempool', v: pt.v, rseed: pt.rseed, cm, txid });
+    });
+    return outputs;
+  }
+
+  /** Trial decryption, then the cm re-check: a plaintext is ours only if it opens cm with our owner. */
+  private decryptOwn(epk: Uint8Array, ct: Uint8Array, cm: bigint): NotePlaintext | null {
+    const pt = decryptNote(this.keys.skEnc, epk, ct, cm);
+    return pt && noteMatches(pt.v, this.keys.owner, pt.rseed, cm) ? pt : null;
   }
 
   async balance(args: { replay: Replay; rpc: BitcoinRpc }): Promise<Balance> {
