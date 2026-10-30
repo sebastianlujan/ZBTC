@@ -1,18 +1,16 @@
 // Groth16 malleability: a re-randomized proof verifies for the same public
 // signals but has different bytes. This is why duplicates are detected only
 // by nullifier (plan, "Duplicates are detected only by nullifier").
-import { readFileSync } from 'node:fs';
 import { afterAll, describe, expect, it } from 'vitest';
 import { parse } from '../../src/codec.js';
-import { CIRCUITS } from '../../src/constants.js';
 import { bytesToHex, cm, randomField } from '../../src/crypto.js';
-import { bytesToProof, dummyInput, proofToBytes, shutdownProver, verify, type VerificationKey } from '../../src/prover.js';
+import { bytesToProof, dummyInput, loadVkey, proofToBytes, shutdownProver, verify } from '../../src/prover.js';
 import { NoteTree } from '../../src/tree.js';
 import { craftTransfer, withProofBytes } from '../helpers/craft.js';
 import { rerandomize } from '../helpers/rerandomize.js';
 import { alice, bob } from '../helpers/fixtures.js';
 
-const vk = JSON.parse(readFileSync(CIRCUITS.main.vkey, 'utf8')) as VerificationKey;
+const vk = loadVkey();
 
 afterAll(async () => {
   await shutdownProver();
