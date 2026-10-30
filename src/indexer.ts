@@ -281,9 +281,6 @@ export class Replay {
   get rejected(): readonly RejectedEntry[] {
     return this.rejectedList;
   }
-  blockHashAt(h: number): string | undefined {
-    return this.hashes.get(h);
-  }
   /** R[h], defined for S-1 <= h <= tip. */
   rootAt(h: number): bigint | undefined {
     return this.roots.get(h);

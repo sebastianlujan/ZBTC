@@ -161,9 +161,6 @@ export class BitcoinRpc {
   getRawMempool() {
     return this.call<string[]>('getrawmempool');
   }
-  getMempoolEntry(txid: string) {
-    return this.call<{ vsize: number; height: number; fees: { base: number } }>('getmempoolentry', [txid]);
-  }
   testMempoolAccept(rawTxs: string[]) {
     return this.call<MempoolAcceptResult[]>('testmempoolaccept', [rawTxs]);
   }
@@ -197,9 +194,6 @@ export class BitcoinRpc {
   }
   sendToAddress(address: string, btc: number) {
     return this.call<string>('sendtoaddress', [address, btc]);
-  }
-  getBalance() {
-    return this.call<number>('getbalance');
   }
   /** Loads a wallet; a wallet that is already loaded is not an error. */
   async loadWallet(name: string): Promise<void> {
