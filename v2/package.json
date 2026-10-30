@@ -1,0 +1,21 @@
+{
+  "name": "zbtc-v2",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A toy note unlocks a Bitcoin key through AADP witness encryption, then spends native regtest BTC",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test:unit": "vitest run test/unit"
+  },
+  "dependencies": {
+    "@noble/ciphers": "2.4.0",
+    "@noble/hashes": "2.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "tsx": "4.23.15",
+    "typescript": "5.9.3",
+    "vitest": "3.2.7"
+  }
+}
