@@ -171,17 +171,17 @@ function checkG2(xc0: bigint, xc1: bigint, yc0: bigint, yc1: bigint, what: strin
  * G1 \ {O}, and B in the G2 prime-order subgroup \ {O}; otherwise a reason.
  */
 export function proofPointsError(proofBytes: Uint8Array): string | null {
-  let p;
+  let proof;
   try {
-    p = bytesToProof(proofBytes); // length and coordinate < q checks
+    proof = bytesToProof(proofBytes); // length and coordinate < q checks
   } catch (e) {
     return (e as Error).message;
   }
-  const n = (s: string) => BigInt(s);
+  const { pi_a: a, pi_b: b, pi_c: c } = proof;
   return (
-    checkG1(n(p.pi_a[0]), n(p.pi_a[1]), 'pi_a') ??
-    checkG2(n(p.pi_b[0][0]), n(p.pi_b[0][1]), n(p.pi_b[1][0]), n(p.pi_b[1][1]), 'pi_b') ??
-    checkG1(n(p.pi_c[0]), n(p.pi_c[1]), 'pi_c')
+    checkG1(BigInt(a[0]), BigInt(a[1]), 'pi_a') ??
+    checkG2(BigInt(b[0][0]), BigInt(b[0][1]), BigInt(b[1][0]), BigInt(b[1][1]), 'pi_b') ??
+    checkG1(BigInt(c[0]), BigInt(c[1]), 'pi_c')
   );
 }
 
