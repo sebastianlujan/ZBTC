@@ -51,6 +51,8 @@ export const OFF_MAGIC = 0;
 export const OFF_VERSION = 4;
 export const OFF_TYPE = 5;
 export const OFF_H_ANCHOR = 6; // u32 LE
+/** h_anchor is a u32, so no height the protocol refers to may exceed this. */
+export const MAX_HEIGHT = 0xffffffff;
 export const OFF_N_IN = 10;
 export const OFF_N_OUT = 11;
 export const OFF_NF = 12; // N_IN * 32

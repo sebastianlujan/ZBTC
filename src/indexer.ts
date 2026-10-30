@@ -9,7 +9,7 @@
 import { readFileSync } from 'node:fs';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { extractEnvelope, parse, type Envelope, type Extracted, type TxLike } from './codec.js';
-import { BODY_BYTES, CIRCUITS, DEPTH, K_MIN, MAX_LEAVES, MAX_VALUE, W } from './constants.js';
+import { BODY_BYTES, CIRCUITS, DEPTH, K_MIN, MAX_HEIGHT, MAX_LEAVES, MAX_VALUE, W } from './constants.js';
 import { bigIntToBytes, bytesToHex, cm, hBody, hexToBytes, isCanonicalDecimal, isField } from './crypto.js';
 import { bytesToProof, publicSignalsOf, verifyWithVkey, type VerificationKey } from './prover.js';
 import { RPC_INVALID_ADDRESS_OR_KEY, RPC_INVALID_PARAMETER, RpcError, type BitcoinRpc } from './rpc.js';
@@ -63,7 +63,7 @@ export function loadGenesis(json: string | unknown): Genesis {
   if (!g || typeof g !== 'object') throw new Error('genesis: not an object');
   if (g.version !== 1) throw new Error('genesis: version must be 1');
   const S = g.startHeight;
-  if (typeof S !== 'number' || !Number.isInteger(S) || S < 1 || S > 0xffffffff) {
+  if (typeof S !== 'number' || !Number.isInteger(S) || S < 1 || S > MAX_HEIGHT) {
     throw new Error('genesis: startHeight must be an integer >= 1');
   }
   const totalSupply = decField(g.totalSupply, 'totalSupply');

@@ -23,6 +23,7 @@ import {
   EPK_BYTES,
   FIELD_BYTES,
   MAGIC,
+  MAX_HEIGHT,
   N_IN,
   N_OUT,
   OFF_CM,
@@ -74,7 +75,7 @@ export type ParseResult = { ok: true; env: Envelope } | { ok: false; code: 'E_PA
 
 /** Writes the 316-byte body. Throws on any out-of-range field. */
 export function serializeBody(env: Envelope): Uint8Array {
-  if (!Number.isInteger(env.hAnchor) || env.hAnchor < 0 || env.hAnchor > 0xffffffff) {
+  if (!Number.isInteger(env.hAnchor) || env.hAnchor < 0 || env.hAnchor > MAX_HEIGHT) {
     throw new RangeError('hAnchor must be a u32');
   }
   if (env.nf.length !== N_IN || env.cm.length !== N_OUT) throw new RangeError('wrong nf/cm count');
