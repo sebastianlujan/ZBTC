@@ -93,10 +93,11 @@ export function makeGenesis(entries: readonly GenesisNote[], startHeight: number
 
 export type RejectCode = 'E_MULTI' | 'E_PARSE' | 'E_ANCHOR' | 'E_NF_DUP' | 'E_NF_SPENT' | 'E_PROOF' | 'E_TREE_FULL';
 
+type ValidEnvelope = { ok: true; env: Envelope; hBody: bigint };
 type Rejection = { ok: false; code: RejectCode; reason: string };
 
 export type Validation =
-  | { ok: true; env: Envelope; hBody: bigint }
+  | ValidEnvelope
   | Rejection
   | { ok: false; code: 'NONE'; reason: string };
 
@@ -137,12 +138,14 @@ export interface ScannableOutput extends AcceptedOutput {
   index: number;
 }
 
+type BlockTx = TxLike & { txid: string };
+
 /** The subset of `getblock <hash> 2` that replay reads. */
 export interface BlockLike {
   hash: string;
   height?: number;
   previousblockhash?: string;
-  tx: (TxLike & { txid: string })[];
+  tx: BlockTx[];
 }
 
 interface UndoRecord {
@@ -372,6 +375,24 @@ export class Replay {
     // tipHeight only advances after the awaits below, so a concurrent call
     // would pass the height check and apply the same block twice.
     if (this.applying) throw new Error('applyBlock is not reentrant');
+    this.assertExtendsTip(H, block);
+
+    const rec: UndoRecord = { treeSizeBefore: this.tree.size, nfs: [], accepted: 0, rejected: 0 };
+    this.applying = true;
+    try {
+      for (let txIndex = 0; txIndex < block.tx.length; txIndex++) {
+        await this.applyTransaction(H, txIndex, block.tx[txIndex], rec);
+      }
+    } catch (e) {
+      this.undoRecord(rec);
+      throw e;
+    } finally {
+      this.applying = false;
+    }
+    this.commitBlock(H, block.hash, rec);
+  }
+
+  private assertExtendsTip(H: number, block: BlockLike): void {
     if (H !== this.tipHeight + 1) throw new Error(`applyBlock(${H}) but tip is ${this.tipHeight}`);
     if (block.height !== undefined && block.height !== H) {
       throw new ChainMismatchError(`block height ${block.height} != ${H}`);
@@ -380,52 +401,50 @@ export class Replay {
     if (H > this.genesis.startHeight && block.previousblockhash !== this.hashes.get(H - 1)) {
       throw new ChainMismatchError(`block ${H} does not extend ${this.hashes.get(H - 1)}`);
     }
+  }
 
-    const rec: UndoRecord = { treeSizeBefore: this.tree.size, nfs: [], accepted: 0, rejected: 0 };
-    this.applying = true;
-    try {
-      for (let txIndex = 0; txIndex < block.tx.length; txIndex++) {
-        const tx = block.tx[txIndex];
-        const ex = extractEnvelope(tx);
-        if (ex.kind === 'none') continue;
-        const res = await this.validate(ex, H);
-        if (res.ok) {
-          const { env } = res;
-          for (const n of env.nf) {
-            this.nullifiers.add(n);
-            rec.nfs.push(n);
-          }
-          const outputs = env.cm.map((c, k) => ({
-            pos: this.tree.append(c),
-            cm: c,
-            epk: env.epk[k],
-            ct: env.ct[k],
-          })) as [AcceptedOutput, AcceptedOutput];
-          this.acceptedList.push({
-            height: H,
-            txIndex,
-            txid: tx.txid,
-            hAnchor: env.hAnchor,
-            hBody: res.hBody,
-            nfs: [env.nf[0], env.nf[1]],
-            outputs,
-          });
-          rec.accepted++;
-        } else if (res.code !== 'NONE') {
-          this.rejectedList.push({ height: H, txIndex, txid: tx.txid, code: res.code, reason: res.reason });
-          rec.rejected++;
-        }
-      }
-    } catch (e) {
-      this.undoRecord(rec);
-      throw e;
-    } finally {
-      this.applying = false;
+  /** Validates transaction `txIndex` of block H and records its effect in the state and in `rec`. */
+  private async applyTransaction(H: number, txIndex: number, tx: BlockTx, rec: UndoRecord): Promise<void> {
+    const extracted = extractEnvelope(tx);
+    if (extracted.kind === 'none') return;
+    const res = await this.validate(extracted, H);
+    if (res.ok) {
+      this.accept(H, txIndex, tx.txid, res, rec);
+    } else if (res.code !== 'NONE') {
+      this.rejectedList.push({ height: H, txIndex, txid: tx.txid, code: res.code, reason: res.reason });
+      rec.rejected++;
     }
+  }
 
-    // After the last transaction. An empty (or all-rejected) block carries the root forward.
+  /** The mutation of an accepted envelope: its nullifiers join N, its commitments join T. */
+  private accept(H: number, txIndex: number, txid: string, valid: ValidEnvelope, rec: UndoRecord): void {
+    const { env } = valid;
+    for (const n of env.nf) {
+      this.nullifiers.add(n);
+      rec.nfs.push(n);
+    }
+    const outputs = env.cm.map((c, k) => ({
+      pos: this.tree.append(c),
+      cm: c,
+      epk: env.epk[k],
+      ct: env.ct[k],
+    })) as [AcceptedOutput, AcceptedOutput];
+    this.acceptedList.push({
+      height: H,
+      txIndex,
+      txid,
+      hAnchor: env.hAnchor,
+      hBody: valid.hBody,
+      nfs: [env.nf[0], env.nf[1]],
+      outputs,
+    });
+    rec.accepted++;
+  }
+
+  /** After the last transaction. An empty (or all-rejected) block carries the root forward. */
+  private commitBlock(H: number, hash: string, rec: UndoRecord): void {
     this.roots.set(H, rec.accepted > 0 ? this.tree.root() : (this.roots.get(H - 1) as bigint));
-    this.hashes.set(H, block.hash);
+    this.hashes.set(H, hash);
     this.sizes.set(H, this.tree.size);
     this.undo.set(H, rec);
     this.tipHeight = H;
