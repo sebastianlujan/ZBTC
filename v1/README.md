@@ -66,7 +66,8 @@ circuits/   transfer_template.circom (statement), merkle.circom, transfer.circom
 src/        constants, crypto, tree, codec, prover, rpc, indexer (replay), wallet, cli
 scripts/    circuit.sh (build + dev setup), demo.sh
 test/       unit/, circuit/, e2e/, helpers/
-docs/       research.md
+docs/       claude_plan.md, research.md, architecture.excalidraw,
+            architecture-layers.excalidraw
 ```
 
 ## Protocol in one screen

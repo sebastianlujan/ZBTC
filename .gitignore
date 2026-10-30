@@ -7,6 +7,8 @@ build/
 *.wtns
 .atl/
 
-# Local links to existing build artifacts and dependencies.
+# Local compatibility links to existing generated files and state.
 /v1/node_modules
 /v1/build
+/v1/.regtest
+/v1/.zbtc
