@@ -12,7 +12,7 @@ import { extractEnvelope, parse, type Envelope, type Extracted, type TxLike } fr
 import { BODY_BYTES, CIRCUITS, DEPTH, K_MIN, MAX_LEAVES, MAX_VALUE, W } from './constants.js';
 import { bigIntToBytes, bytesToHex, cm, hBody, hexToBytes, isField } from './crypto.js';
 import { bytesToProof, publicSignalsOf, verifyWithVkey, type VerificationKey } from './prover.js';
-import { RpcError, type BitcoinRpc } from './rpc.js';
+import { RPC_INVALID_ADDRESS_OR_KEY, RPC_INVALID_PARAMETER, RpcError, type BitcoinRpc } from './rpc.js';
 import { NoteTree } from './tree.js';
 
 // ---- Genesis inventory ----
@@ -463,9 +463,9 @@ export class Replay {
         try {
           block = await rpc.getBlock(await rpc.getBlockHash(h), 2);
         } catch (e) {
-          // The chain shrank or switched under us: -8 height out of range,
-          // -5 block not found. Anything else (e.g. pruned data) is fatal.
-          if (e instanceof RpcError && (e.code === -8 || e.code === -5)) {
+          // The chain shrank or switched under us: height out of range or
+          // block not found. Anything else (e.g. pruned data) is fatal.
+          if (e instanceof RpcError && (e.code === RPC_INVALID_PARAMETER || e.code === RPC_INVALID_ADDRESS_OR_KEY)) {
             mismatch = true;
             break;
           }

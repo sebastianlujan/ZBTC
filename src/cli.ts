@@ -10,7 +10,7 @@ import { CIRCUITS, ENVELOPE_BYTES } from './constants.js';
 import { bigIntToBytes, bytesToHex, randomField } from './crypto.js';
 import { makeGenesis, Replay, replayOptionsFromFiles } from './indexer.js';
 import { shutdownProver } from './prover.js';
-import { BitcoinRpc, RpcError } from './rpc.js';
+import { BitcoinRpc, RPC_WALLET_ERROR, RpcError } from './rpc.js';
 import { Wallet, type NoteView } from './wallet.js';
 
 const ZBTC_DIR = path.resolve(process.env.ZBTC_DIR ?? '.zbtc');
@@ -44,7 +44,7 @@ async function ensureWallet(rpc: BitcoinRpc, name: string): Promise<void> {
   try {
     await rpc.createWallet(name);
   } catch (e) {
-    if (e instanceof RpcError && e.code === -4) await rpc.loadWallet(name);
+    if (e instanceof RpcError && e.code === RPC_WALLET_ERROR) await rpc.loadWallet(name);
     else throw e;
   }
 }

@@ -6,6 +6,15 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { bytesToHex } from './crypto.js';
 
+// bitcoind RPC error codes ZBTC reacts to (bitcoin/src/rpc/protocol.h).
+/** createwallet on an existing wallet ("Database already exists"). */
+export const RPC_WALLET_ERROR = -4;
+/** Unknown block hash. */
+export const RPC_INVALID_ADDRESS_OR_KEY = -5;
+/** Block height out of range. */
+export const RPC_INVALID_PARAMETER = -8;
+export const RPC_WALLET_ALREADY_LOADED = -35;
+
 export class RpcError extends Error {
   constructor(
     readonly code: number,
@@ -192,12 +201,12 @@ export class BitcoinRpc {
   getBalance() {
     return this.call<number>('getbalance');
   }
-  /** Loads a wallet; a wallet that is already loaded (-35) is not an error. */
+  /** Loads a wallet; a wallet that is already loaded is not an error. */
   async loadWallet(name: string): Promise<void> {
     try {
       await this.call('loadwallet', [name]);
     } catch (e) {
-      if (!(e instanceof RpcError && e.code === -35)) throw e;
+      if (!(e instanceof RpcError && e.code === RPC_WALLET_ALREADY_LOADED)) throw e;
     }
   }
   /** lockunspent; unlock = true releases the outpoints. */

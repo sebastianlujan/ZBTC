@@ -115,7 +115,7 @@ export async function startNode(opts: NodeOptions = {}): Promise<RegtestNode> {
         await rpc.getBlockchainInfo();
         break;
       } catch (e) {
-        // ECONNREFUSED (fetch failed) or RPC -28 (warming up): retry.
+        // ECONNREFUSED (fetch failed) or RPC -28 RPC_IN_WARMUP: retry.
         lastErr = e;
       }
     }
