@@ -8,6 +8,13 @@ import { hexToBytes } from '@noble/hashes/utils.js';
 
 export type JsonObject = Readonly<Record<string, unknown>>;
 
+/** Pretty-printed so a reviewer can diff two runs' artifacts by eye. */
+const JSON_INDENT = 2;
+
+export function formatJson(value: unknown): string {
+  return `${JSON.stringify(value, null, JSON_INDENT)}\n`;
+}
+
 /** Canonical non-negative decimal: no sign, no leading zeros, no exponent. */
 const DECIMAL_PATTERN = /^(0|[1-9][0-9]*)$/;
 /** Whole bytes only, lowercase, so one value has exactly one encoding. */

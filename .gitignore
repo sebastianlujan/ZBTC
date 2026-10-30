@@ -12,3 +12,4 @@ build/
 /v1/build
 /v1/.regtest
 /v1/.zbtc
+/v2/.demo

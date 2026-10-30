@@ -6,7 +6,9 @@
   "description": "A toy note unlocks a Bitcoin key through AADP witness encryption, then spends native regtest BTC",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test:unit": "vitest run test/unit"
+    "test:unit": "vitest run test/unit",
+    "test:e2e": "vitest run test/e2e",
+    "demo": "bash scripts/demo.sh"
   },
   "dependencies": {
     "@noble/ciphers": "2.4.0",

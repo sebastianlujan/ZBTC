@@ -18,7 +18,15 @@ import {
   SETUP_SEED_BYTES,
   TXID_BYTES,
 } from './constants.js';
-import { readBigInt, readBytes, readInteger, readObject, readString, type JsonObject } from './json.js';
+import {
+  formatJson,
+  readBigInt,
+  readBytes,
+  readInteger,
+  readObject,
+  readString,
+  type JsonObject,
+} from './json.js';
 import { issueNote, TOY_NOTE_OPENING, type NoteOpening } from './note.js';
 
 export interface Manifest {
@@ -55,8 +63,6 @@ export interface FixtureInputs {
   readonly recipientScript: Uint8Array;
 }
 
-/** Pretty-printed so a reviewer can diff two runs' fixtures by eye. */
-const JSON_INDENT = 2;
 const TXID_PATTERN = new RegExp(`^[0-9a-f]{${2 * TXID_BYTES}}$`);
 /** vout is a u32 on the wire. */
 const MAX_VOUT = 0xffff_ffff;
@@ -116,7 +122,7 @@ export function serializeFixture({ version, manifest, seed, note, spend }: Fixtu
       feeSats: `${spend.feeSats}`,
     },
   };
-  return JSON.stringify(json, null, JSON_INDENT);
+  return formatJson(json);
 }
 
 function parseSpend(spend: JsonObject): SpendTerms {
