@@ -15,6 +15,11 @@ export const RPC_INVALID_ADDRESS_OR_KEY = -5;
 export const RPC_INVALID_PARAMETER = -8;
 export const RPC_WALLET_ALREADY_LOADED = -35;
 
+const DEFAULT_HOST = '127.0.0.1';
+const DEFAULT_TIMEOUT_MS = 120_000;
+/** Characters of a non-JSON HTTP body kept in the error message. */
+const ERROR_BODY_PREVIEW_CHARS = 200;
+
 export class RpcError extends Error {
   constructor(
     readonly code: number,
@@ -27,14 +32,15 @@ export class RpcError extends Error {
 }
 
 export interface RpcClientOptions {
-  /** RPC port on 127.0.0.1. */
+  /** RPC port on `host`. */
   port: number;
   /** bitcoind -datadir; the cookie is read from <datadir>/regtest/.cookie. */
   datadir?: string;
   /** Explicit cookie file (overrides datadir). */
   cookieFile?: string;
+  /** Default 127.0.0.1. */
   host?: string;
-  /** Per-call timeout (ms). */
+  /** Per-call timeout (ms). Default 120 s. */
   timeoutMs?: number;
 }
 
@@ -93,12 +99,12 @@ export class BitcoinRpc {
     /** Wallet name for /wallet/<name> scoped calls, if any. */
     readonly walletName?: string,
   ) {
-    const host = opts.host ?? '127.0.0.1';
+    const host = opts.host ?? DEFAULT_HOST;
     this.baseUrl = `http://${host}:${opts.port}`;
     if (opts.cookieFile) this.cookieFile = opts.cookieFile;
     else if (opts.datadir) this.cookieFile = path.join(opts.datadir, 'regtest', '.cookie');
     else throw new Error('BitcoinRpc needs datadir or cookieFile');
-    this.timeoutMs = opts.timeoutMs ?? 120_000;
+    this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   }
 
   /** A client whose calls go to /wallet/<name>. */
@@ -127,7 +133,7 @@ export class BitcoinRpc {
     try {
       body = JSON.parse(text);
     } catch {
-      throw new RpcError(-res.status, `HTTP ${res.status}: ${text.slice(0, 200)}`, method);
+      throw new RpcError(-res.status, `HTTP ${res.status}: ${text.slice(0, ERROR_BODY_PREVIEW_CHARS)}`, method);
     }
     if (body?.error) throw new RpcError(body.error.code, body.error.message, method);
     if (!res.ok) throw new RpcError(-res.status, `HTTP ${res.status}`, method);
