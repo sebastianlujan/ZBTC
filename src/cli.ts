@@ -46,8 +46,10 @@ function loadConfig(): Config {
   return JSON.parse(readFileSync(CONFIG_PATH, 'utf8')) as Config;
 }
 
-function rpcOf(c: Config): BitcoinRpc {
-  return new BitcoinRpc({ port: c.rpcPort, datadir: path.resolve(c.datadir) });
+/** Loads config.json and opens an RPC client to its node. */
+function connect(): { config: Config; rpc: BitcoinRpc } {
+  const config = loadConfig();
+  return { config, rpc: new BitcoinRpc({ port: config.rpcPort, datadir: path.resolve(config.datadir) }) };
 }
 
 async function ensureWallet(rpc: BitcoinRpc, name: string): Promise<void> {
@@ -59,8 +61,8 @@ async function ensureWallet(rpc: BitcoinRpc, name: string): Promise<void> {
   }
 }
 
-async function freshReplay(c: Config, rpc: BitcoinRpc): Promise<Replay> {
-  return Replay.fresh(rpc, replayOptionsFromFiles(path.resolve(c.genesisPath), path.resolve(c.vkeyPath)));
+async function freshReplay(config: Config, rpc: BitcoinRpc): Promise<Replay> {
+  return Replay.fresh(rpc, replayOptionsFromFiles(path.resolve(config.genesisPath), path.resolve(config.vkeyPath)));
 }
 
 /** Removes `name <value>` from args and returns the value. */
@@ -137,26 +139,24 @@ async function cmdInit(args: string[]): Promise<void> {
 }
 
 async function cmdWalletNew(name: string): Promise<void> {
-  const c = loadConfig();
-  const rpc = rpcOf(c);
+  const { config, rpc } = connect();
   const w = Wallet.create(WALLETS_DIR, name);
   const fee = feeWalletOf(name);
   await ensureWallet(rpc, fee);
-  await rpc.loadWallet(c.minerWallet);
-  await rpc.wallet(c.minerWallet).sendToAddress(await rpc.wallet(fee).getNewAddress(), FEE_WALLET_FUNDING_BTC);
-  await rpc.generateToAddress(1, c.minerAddress);
+  await rpc.loadWallet(config.minerWallet);
+  await rpc.wallet(config.minerWallet).sendToAddress(await rpc.wallet(fee).getNewAddress(), FEE_WALLET_FUNDING_BTC);
+  await rpc.generateToAddress(1, config.minerAddress);
   console.log(`wallet ${name}: ${w.address()}`);
   console.log(`fee wallet ${fee}: funded with ${FEE_WALLET_FUNDING_BTC} BTC (pays Bitcoin fees only)`);
 }
 
 async function cmdGenesis(args: string[]): Promise<void> {
-  const c = loadConfig();
-  const rpc = rpcOf(c);
+  const { config, rpc } = connect();
   const force = args.includes('--force');
   const specs = args.filter((a) => a !== '--force');
   if (specs.length === 0) throw new Error('usage: zbtc genesis <name>=<units> [...]');
-  const genesisPath = path.resolve(c.genesisPath);
-  if (existsSync(genesisPath) && !force) throw new Error(`${c.genesisPath} exists (use --force)`);
+  const genesisPath = path.resolve(config.genesisPath);
+  if (existsSync(genesisPath) && !force) throw new Error(`${config.genesisPath} exists (use --force)`);
   const entries = specs.map((s) => {
     const m = /^([^=]+)=([0-9]+)$/.exec(s);
     if (!m) throw new Error(`bad genesis entry: ${s}`);
@@ -166,23 +166,21 @@ async function cmdGenesis(args: string[]): Promise<void> {
   const text = makeGenesis(entries, S);
   writeFileSync(genesisPath, text);
   const supply = entries.reduce((s, e) => s + e.v, 0n);
-  console.log(`genesis: ${entries.length} notes, total supply ${supply} units, startHeight ${S} (${c.genesisPath})`);
+  console.log(`genesis: ${entries.length} notes, total supply ${supply} units, startHeight ${S} (${config.genesisPath})`);
 }
 
 async function cmdMine(n: string): Promise<void> {
-  const c = loadConfig();
-  const rpc = rpcOf(c);
+  const { config, rpc } = connect();
   const count = Number(n ?? '1');
   if (!Number.isInteger(count) || count < 1) throw new Error('usage: zbtc mine <n>');
-  await rpc.generateToAddress(count, c.minerAddress);
+  await rpc.generateToAddress(count, config.minerAddress);
   console.log(`mined ${count}; height ${await rpc.getBlockCount()}`);
 }
 
 async function cmdSend(from: string, to: string, amountStr: string): Promise<void> {
   if (!from || !to || !amountStr) throw new Error('usage: zbtc send <from> <to-name|address> <units>');
-  const c = loadConfig();
-  const rpc = rpcOf(c);
-  const replay = await freshReplay(c, rpc);
+  const { config, rpc } = connect();
+  const replay = await freshReplay(config, rpc);
   const wallet = Wallet.load(WALLETS_DIR, from);
   const dest = Wallet.exists(WALLETS_DIR, to) ? Wallet.load(WALLETS_DIR, to).address() : to;
   const feeWallet = feeWalletOf(from);
@@ -197,9 +195,8 @@ async function cmdSend(from: string, to: string, amountStr: string): Promise<voi
 }
 
 async function cmdNotes(name: string): Promise<void> {
-  const c = loadConfig();
-  const rpc = rpcOf(c);
-  const replay = await freshReplay(c, rpc);
+  const { config, rpc } = connect();
+  const replay = await freshReplay(config, rpc);
   const { notes, released } = await Wallet.load(WALLETS_DIR, name).view({ replay, rpc });
   for (const r of released) console.log(`lock on ${r.txid} released: ${r.reason}`);
   console.log(`notes of ${name}:`);
@@ -209,9 +206,8 @@ async function cmdNotes(name: string): Promise<void> {
 
 async function cmdBalance(names: string[]): Promise<void> {
   if (names.length === 0) throw new Error('usage: zbtc balance <name> [...]');
-  const c = loadConfig();
-  const rpc = rpcOf(c);
-  const replay = await freshReplay(c, rpc);
+  const { config, rpc } = connect();
+  const replay = await freshReplay(config, rpc);
   for (const name of names) {
     const b = await Wallet.load(WALLETS_DIR, name).balance({ replay, rpc });
     console.log(
@@ -221,10 +217,9 @@ async function cmdBalance(names: string[]): Promise<void> {
 }
 
 async function cmdIndex(args: string[]): Promise<void> {
-  const c = loadConfig();
-  const rpc = rpcOf(c);
+  const { config, rpc } = connect();
   const t0 = performance.now();
-  const replay = await freshReplay(c, rpc);
+  const replay = await freshReplay(config, rpc);
   const ms = performance.now() - t0;
   const d = replay.digest();
   const codeList = countsByCode(replay.rejected);
