@@ -85,37 +85,46 @@ function bitcoindArgs(opts: NodeOptions, datadir: string, rpcPort: number, p2pPo
   ];
 }
 
-export async function startNode(opts: NodeOptions = {}): Promise<RegtestNode> {
-  const datadir = mkdtempSync(path.join(os.tmpdir(), 'zbtc-regtest-'));
-  const [rpcPort, p2pPort] = await freePorts(2);
-  const proc = spawn(BITCOIND, bitcoindArgs(opts, datadir, rpcPort, p2pPort), { stdio: ['ignore', 'ignore', 'pipe'] });
+interface Bitcoind {
+  proc: ChildProcess;
+  /** Resolves once the process has exited (or failed to spawn). */
+  exited: Promise<void>;
+  hasExited(): boolean;
+  stderr(): string;
+}
+
+function spawnBitcoind(args: string[]): Bitcoind {
+  const proc = spawn(BITCOIND, args, { stdio: ['ignore', 'ignore', 'pipe'] });
   let stderr = '';
   proc.stderr?.on('data', (d) => (stderr += String(d)));
-  let exited = false;
-  const exitPromise = new Promise<void>((resolve) => {
+  let hasExited = false;
+  const exited = new Promise<void>((resolve) => {
     proc.once('exit', () => {
-      exited = true;
+      hasExited = true;
       resolve();
     });
     proc.once('error', (e) => {
       stderr += String(e);
-      exited = true;
+      hasExited = true;
       resolve();
     });
   });
+  return { proc, exited, hasExited: () => hasExited, stderr: () => stderr };
+}
 
-  const rpc = new BitcoinRpc({ port: rpcPort, datadir });
+/** Polls until bitcoind answers RPC; on exit or timeout, deletes the datadir and throws. */
+async function waitUntilReady(bitcoind: Bitcoind, rpc: BitcoinRpc, datadir: string, timeoutMs: number): Promise<void> {
   const cookie = path.join(datadir, 'regtest', '.cookie');
-  const deadline = Date.now() + (opts.timeoutMs ?? STARTUP_TIMEOUT_MS);
+  const deadline = Date.now() + timeoutMs;
   let lastErr: unknown;
   for (;;) {
-    if (exited) {
+    if (bitcoind.hasExited()) {
       rmSync(datadir, { recursive: true, force: true });
-      throw new Error(`bitcoind exited during startup: ${stderr}\n${lastErr ?? ''}`);
+      throw new Error(`bitcoind exited during startup: ${bitcoind.stderr()}\n${lastErr ?? ''}`);
     }
     if (Date.now() > deadline) {
-      proc.kill('SIGKILL');
-      await exitPromise;
+      bitcoind.proc.kill('SIGKILL');
+      await bitcoind.exited;
       const tail = debugLogTail(datadir);
       rmSync(datadir, { recursive: true, force: true });
       throw new Error(`bitcoind did not become ready: ${String(lastErr)}\n${tail}`);
@@ -123,7 +132,7 @@ export async function startNode(opts: NodeOptions = {}): Promise<RegtestNode> {
     if (existsSync(cookie)) {
       try {
         await rpc.getBlockchainInfo();
-        break;
+        return;
       } catch (e) {
         // ECONNREFUSED (fetch failed) or RPC -28 RPC_IN_WARMUP: retry.
         lastErr = e;
@@ -131,33 +140,45 @@ export async function startNode(opts: NodeOptions = {}): Promise<RegtestNode> {
     }
     await sleep(POLL_INTERVAL_MS);
   }
+}
+
+/** RPC stop (SIGTERM if that fails, SIGKILL after STOP_TIMEOUT_MS), then deletes the datadir. */
+async function stopBitcoind(bitcoind: Bitcoind, rpc: BitcoinRpc, datadir: string): Promise<void> {
+  if (!bitcoind.hasExited()) {
+    try {
+      await rpc.call('stop');
+    } catch {
+      bitcoind.proc.kill('SIGTERM');
+    }
+    const timedOut = await Promise.race([bitcoind.exited.then(() => false), sleep(STOP_TIMEOUT_MS).then(() => true)]);
+    if (timedOut) {
+      bitcoind.proc.kill('SIGKILL');
+      await bitcoind.exited;
+    }
+  }
+  rmSync(datadir, { recursive: true, force: true });
+}
+
+export async function startNode(opts: NodeOptions = {}): Promise<RegtestNode> {
+  const datadir = mkdtempSync(path.join(os.tmpdir(), 'zbtc-regtest-'));
+  const [rpcPort, p2pPort] = await freePorts(2);
+  const bitcoind = spawnBitcoind(bitcoindArgs(opts, datadir, rpcPort, p2pPort));
+  const rpc = new BitcoinRpc({ port: rpcPort, datadir });
+  await waitUntilReady(bitcoind, rpc, datadir, opts.timeoutMs ?? STARTUP_TIMEOUT_MS);
 
   let stopped = false;
-  const node: RegtestNode = {
+  return {
     rpc,
     datadir,
     rpcPort,
     p2pPort,
-    proc,
+    proc: bitcoind.proc,
     async stop() {
       if (stopped) return;
       stopped = true;
-      if (!exited) {
-        try {
-          await rpc.call('stop');
-        } catch {
-          proc.kill('SIGTERM');
-        }
-        const timedOut = await Promise.race([exitPromise.then(() => false), sleep(STOP_TIMEOUT_MS).then(() => true)]);
-        if (timedOut) {
-          proc.kill('SIGKILL');
-          await exitPromise;
-        }
-      }
-      rmSync(datadir, { recursive: true, force: true });
+      await stopBitcoind(bitcoind, rpc, datadir);
     },
   };
-  return node;
 }
 
 /** Creates the miner wallet and mines `blocks` (by default enough for one mature coinbase). */
