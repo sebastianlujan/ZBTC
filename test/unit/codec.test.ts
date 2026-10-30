@@ -26,29 +26,15 @@ import {
   Q,
   R,
 } from '../../src/constants.js';
-import { bigIntToBytes, bytesToHex, cm, hBody, randomField } from '../../src/crypto.js';
-import { bytesToProof, dummyInput, publicSignalsOf, shutdownProver, verify } from '../../src/prover.js';
-import { NoteTree } from '../../src/tree.js';
-import { craftTransfer, type CraftedTransfer } from '../helpers/craft.js';
-import { alice, bob } from '../helpers/fixtures.js';
+import { bigIntToBytes, bytesToHex, hBody } from '../../src/crypto.js';
+import { bytesToProof, publicSignalsOf, shutdownProver, verify } from '../../src/prover.js';
+import { craftAliceToBob, type CraftedTransfer } from '../helpers/craft.js';
 
 let real: CraftedTransfer;
 let bytes: Uint8Array;
 
 beforeAll(async () => {
-  const tree = new NoteTree();
-  const rseed = randomField();
-  const pos = tree.append(cm(100n, alice.owner, rseed));
-  real = await craftTransfer({
-    root: tree.root(),
-    hAnchor: 123,
-    skSpend: alice.skSpend,
-    inputs: [{ v: 100n, rseed, pos, path: tree.witness(pos) }, dummyInput()],
-    outputs: [
-      { v: 30n, owner: bob.owner, pkEnc: bob.pkEnc },
-      { v: 70n, owner: alice.owner, pkEnc: alice.pkEnc },
-    ],
-  });
+  real = await craftAliceToBob({ v: 100n, pay: 30n, hAnchor: 123 });
   bytes = real.bytes;
 });
 

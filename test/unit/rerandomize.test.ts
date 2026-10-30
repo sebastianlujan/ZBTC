@@ -3,12 +3,10 @@
 // by nullifier (plan, "Duplicates are detected only by nullifier").
 import { afterAll, describe, expect, it } from 'vitest';
 import { parse } from '../../src/codec.js';
-import { bytesToHex, cm, randomField } from '../../src/crypto.js';
-import { bytesToProof, dummyInput, loadVkey, proofToBytes, shutdownProver, verify } from '../../src/prover.js';
-import { NoteTree } from '../../src/tree.js';
-import { craftTransfer, withProofBytes } from '../helpers/craft.js';
+import { bytesToHex } from '../../src/crypto.js';
+import { bytesToProof, loadVkey, proofToBytes, shutdownProver, verify } from '../../src/prover.js';
+import { craftAliceToBob, withProofBytes } from '../helpers/craft.js';
 import { rerandomize } from '../helpers/rerandomize.js';
-import { alice, bob } from '../helpers/fixtures.js';
 
 const vk = loadVkey();
 
@@ -18,19 +16,7 @@ afterAll(async () => {
 
 describe('Groth16 re-randomization', () => {
   it('verifies under snarkjs for the same public signals, with different bytes', async () => {
-    const tree = new NoteTree();
-    const rseed = randomField();
-    tree.append(cm(50n, alice.owner, rseed));
-    const t = await craftTransfer({
-      root: tree.root(),
-      hAnchor: 7,
-      skSpend: alice.skSpend,
-      inputs: [{ v: 50n, rseed, pos: 0, path: tree.witness(0) }, dummyInput()],
-      outputs: [
-        { v: 20n, owner: bob.owner, pkEnc: bob.pkEnc },
-        { v: 30n, owner: alice.owner, pkEnc: alice.pkEnc },
-      ],
-    });
+    const t = await craftAliceToBob({ v: 50n, pay: 20n, hAnchor: 7 });
     expect(await verify(t.publicSignals, t.proof)).toBe(true);
 
     const p1 = rerandomize(t.proof, vk);

@@ -3,11 +3,10 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomField } from '../../src/crypto.js';
 import { makeGenesis, Replay, type ReplayOptions } from '../../src/indexer.js';
-import { dummyInput, shutdownProver } from '../../src/prover.js';
+import { shutdownProver } from '../../src/prover.js';
 import { publishEnvelope } from '../../src/rpc.js';
-import { NoteTree } from '../../src/tree.js';
-import { craftTransfer, type CraftedTransfer } from '../helpers/craft.js';
-import { alice, bob, replayOptionsFor } from '../helpers/fixtures.js';
+import { craftAliceToBob, type CraftedTransfer } from '../helpers/craft.js';
+import { alice, replayOptionsFor } from '../helpers/fixtures.js';
 import { fundWallet, initMiner, mine, startNode, type RegtestNode } from '../helpers/regtest.js';
 
 let node: RegtestNode;
@@ -35,17 +34,7 @@ beforeAll(async () => {
   const note = { v: 100n, owner: alice.owner, rseed: randomField() };
   opts = replayOptionsFor(makeGenesis([note], S));
 
-  const tree = new NoteTree([opts.genesis.notes[0].cm]);
-  crafted = await craftTransfer({
-    root: tree.root(),
-    hAnchor: S - 1,
-    skSpend: alice.skSpend,
-    inputs: [{ v: 100n, rseed: note.rseed, pos: 0, path: tree.witness(0) }, dummyInput()],
-    outputs: [
-      { v: 30n, owner: bob.owner, pkEnc: bob.pkEnc },
-      { v: 70n, owner: alice.owner, pkEnc: alice.pkEnc },
-    ],
-  });
+  crafted = await craftAliceToBob({ v: 100n, pay: 30n, hAnchor: S - 1, rseed: note.rseed });
   inc = new Replay(opts);
 });
 

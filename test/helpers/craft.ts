@@ -18,9 +18,10 @@ import {
   R,
   type CircuitName,
 } from '../../src/constants.js';
-import { bigIntToBytes, bytesToBigInt, encryptNote, randomField } from '../../src/crypto.js';
+import { bigIntToBytes, bytesToBigInt, cm, encryptNote, randomField } from '../../src/crypto.js';
 import {
   buildCircuitInput,
+  dummyInput,
   proofToBytes,
   prove,
   publicSignalsOf,
@@ -30,6 +31,8 @@ import {
   type SpendNote,
 } from '../../src/prover.js';
 import { buildEnvelopeTx, type BitcoinRpc, type EnvelopeTx } from '../../src/rpc.js';
+import { NoteTree } from '../../src/tree.js';
+import { alice, bob } from './fixtures.js';
 
 // ---- Real envelopes ----
 
@@ -93,6 +96,25 @@ export async function craftTransfer(o: CraftOptions): Promise<CraftedTransfer> {
   }
   env.proofBytes = proofToBytes(proof);
   return { env, bytes: serialize(env), input, proof, publicSignals, outRseed: [outs[0].rseed, outs[1].rseed] };
+}
+
+/**
+ * Alice spends one note of `v` units, the only leaf of its tree, paying Bob
+ * `pay` and keeping the change; the second input is a dummy.
+ */
+export function craftAliceToBob(o: { v: bigint; pay: bigint; hAnchor: number; rseed?: bigint }): Promise<CraftedTransfer> {
+  const rseed = o.rseed ?? randomField();
+  const tree = new NoteTree([cm(o.v, alice.owner, rseed)]);
+  return craftTransfer({
+    root: tree.root(),
+    hAnchor: o.hAnchor,
+    skSpend: alice.skSpend,
+    inputs: [{ v: o.v, rseed, pos: 0, path: tree.witness(0) }, dummyInput()],
+    outputs: [
+      { v: o.pay, owner: bob.owner, pkEnc: bob.pkEnc },
+      { v: o.v - o.pay, owner: alice.owner, pkEnc: alice.pkEnc },
+    ],
+  });
 }
 
 // ---- Byte-level mutators (all return a copy) ----
