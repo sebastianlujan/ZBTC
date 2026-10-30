@@ -32,13 +32,25 @@ export interface Genesis {
   notes: (GenesisNote & { cm: bigint })[];
 }
 
+function sumValues(notes: readonly GenesisNote[]): bigint {
+  return notes.reduce((s, n) => s + n.v, 0n);
+}
+
 function decField(x: unknown, what: string): bigint {
   if (!isCanonicalDecimal(x)) throw new Error(`genesis: ${what} must be a canonical decimal string`);
   return BigInt(x);
 }
 
-export function cmOfGenesisNote(n: GenesisNote): bigint {
-  return cm(n.v, n.owner, n.rseed);
+/** Note `i` of the inventory: v < 2^64, owner and rseed < r; computes its cm. */
+function parseGenesisNote(raw: unknown, i: number): Genesis['notes'][number] {
+  const n = raw as Record<string, unknown>;
+  const v = decField(n?.v, `notes[${i}].v`);
+  const owner = decField(n?.owner, `notes[${i}].owner`);
+  const rseed = decField(n?.rseed, `notes[${i}].rseed`);
+  if (v > MAX_VALUE) throw new Error(`genesis: notes[${i}].v >= 2^64`);
+  if (!isField(owner)) throw new Error(`genesis: notes[${i}].owner >= r`);
+  if (!isField(rseed)) throw new Error(`genesis: notes[${i}].rseed >= r`);
+  return { v, owner, rseed, cm: cm(v, owner, rseed) };
 }
 
 /**
@@ -57,25 +69,15 @@ export function loadGenesis(json: string | unknown): Genesis {
   const totalSupply = decField(g.totalSupply, 'totalSupply');
   if (!Array.isArray(g.notes)) throw new Error('genesis: notes must be an array');
   if (g.notes.length > MAX_LEAVES) throw new Error('genesis: too many notes');
-  let sum = 0n;
-  const notes = g.notes.map((raw: unknown, i: number) => {
-    const n = raw as Record<string, unknown>;
-    const v = decField(n?.v, `notes[${i}].v`);
-    const owner = decField(n?.owner, `notes[${i}].owner`);
-    const rseed = decField(n?.rseed, `notes[${i}].rseed`);
-    if (v > MAX_VALUE) throw new Error(`genesis: notes[${i}].v >= 2^64`);
-    if (!isField(owner)) throw new Error(`genesis: notes[${i}].owner >= r`);
-    if (!isField(rseed)) throw new Error(`genesis: notes[${i}].rseed >= r`);
-    sum += v;
-    return { v, owner, rseed, cm: cmOfGenesisNote({ v, owner, rseed }) };
-  });
+  const notes = g.notes.map(parseGenesisNote);
+  const sum = sumValues(notes);
   if (sum !== totalSupply) throw new Error(`genesis: sum(v) = ${sum} != totalSupply = ${totalSupply}`);
   return { version: 1, startHeight: S, totalSupply, notes };
 }
 
 /** Serializes a genesis inventory (totalSupply = sum of v). */
 export function makeGenesis(entries: readonly GenesisNote[], startHeight: number): string {
-  const totalSupply = entries.reduce((s, e) => s + e.v, 0n);
+  const totalSupply = sumValues(entries);
   const doc = {
     version: 1,
     startHeight,
