@@ -728,10 +728,21 @@ async function handleAction(action: Action, req: IncomingMessage, res: ServerRes
   res.end();
 }
 
+/** A missing page file is a 404, not an uncaught error that would stop the server. */
+function serveFile(res: ServerResponse, { file, type }: { file: string; type: string }): void {
+  let body: string;
+  try {
+    body = readFileSync(path.join(import.meta.dirname, file), 'utf8');
+  } catch {
+    return send(res, 404, 'text/plain', `missing ui/${file}`);
+  }
+  send(res, 200, type, body);
+}
+
 const server = createServer((req, res) => {
   const url = req.url ?? '';
   const file = STATIC[url];
-  if (req.method === 'GET' && file) return send(res, 200, file.type, readFileSync(path.join(import.meta.dirname, file.file), 'utf8'));
+  if (req.method === 'GET' && file) return serveFile(res, file);
   const action = ACTIONS[url];
   if (req.method === 'POST' && action) return void handleAction(action, req, res);
   send(res, 404, 'text/plain', 'not found');
