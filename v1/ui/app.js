@@ -65,6 +65,8 @@ const S = {
   chain: null,
   loaded: false,
   account: 'alice',
+  /** The wallet's mode: 'private' shows and sends shielded ZBTC, 'public' plain Bitcoin. */
+  mode: 'private',
   busy: null,
   progress: [],
   toast: null,
@@ -417,6 +419,41 @@ function appHead() {
     h('span', { className: 'chain-pill up' }, h('span', { className: 'dot' }), h('span', { textContent: `regtest · ${S.chain.height}` })));
 }
 
+/** Private or public: switches the balance on show and the mode Send and Receive open in. */
+function modeSwitch() {
+  const option = (mode, label, iconName) => {
+    const b = h('button', { type: 'button', className: mode, attrs: { role: 'radio', 'aria-checked': String(S.mode === mode) } }, icon(iconName), label);
+    b.onclick = () => {
+      S.mode = mode;
+      renderWallet();
+    };
+    return b;
+  };
+  return h('div', { className: 'mode-switch', attrs: { role: 'radiogroup', 'aria-label': 'Modo de la wallet' } },
+    option('private', 'Privado', 'shield'), option('public', 'Público', 'eye'));
+}
+
+/** The big balance: shielded ZBTC in private mode, the fee wallet's BTC in public mode. */
+function hero(w, sendBtn, receiveBtn) {
+  if (S.mode === 'public') {
+    const total = w.fee.confirmed + w.fee.unconfirmed;
+    return h('section', { className: 'hero public' },
+      h('div', { className: 'hero-label' }, icon('eye'), 'Saldo público · Bitcoin'),
+      h('div', { className: 'balance' }, h('span', { className: 'amount long', textContent: BTC_FORMAT.format(total) }), h('span', { className: 'unit', textContent: 'BTC' })),
+      h('p', { className: 'hero-sub', textContent: w.fee.unconfirmed ? `${btc(w.fee.unconfirmed)} sin confirmar · cualquiera ve estos movimientos` : 'Cualquiera ve los movimientos de este saldo' }),
+      h('div', { className: 'hero-actions' }, sendBtn, receiveBtn));
+  }
+  const after = afterNextBlock(w);
+  return h('section', { className: 'hero' },
+    h('div', { className: 'hero-label' }, icon('shield'), 'Saldo protegido · ZBTC'),
+    h('div', { className: 'balance' },
+      h('span', { className: 'amount', textContent: String(after) }),
+      h('span', { className: 'unit', textContent: 'ZBTC' }),
+      h('span', { className: 'info', tabIndex: 0, textContent: '?', attrs: { 'data-tip': UNITS_TIP, 'aria-label': UNITS_TIP } })),
+    h('p', { className: 'hero-sub', textContent: w.spendable === after ? 'Todo disponible para enviar' : `${zbtc(w.spendable)} disponibles ahora · el resto se confirma con el próximo bloque` }),
+    h('div', { className: 'hero-actions' }, sendBtn, receiveBtn));
+}
+
 function renderWallet() {
   const main = $('app');
   if (!S.loaded) {
@@ -435,15 +472,8 @@ function renderWallet() {
   const transfersMade = S.chain.activity.some((e) => e.kind !== 'genesis');
 
   main.replaceChildren(h('div', { className: 'wallet' },
-    appHead(),
-    h('section', { className: 'hero' },
-      h('div', { className: 'hero-label' }, icon('shield'), 'Saldo protegido'),
-      h('div', { className: 'balance' },
-        h('span', { className: 'amount', textContent: String(after) }),
-        h('span', { className: 'unit', textContent: 'ZBTC' }),
-        h('span', { className: 'info', tabIndex: 0, textContent: '?', attrs: { 'data-tip': UNITS_TIP, 'aria-label': UNITS_TIP } })),
-      h('p', { className: 'hero-sub', textContent: w.spendable === after ? 'Todo disponible para enviar' : `${zbtc(w.spendable)} disponibles ahora · el resto se confirma con el próximo bloque` }),
-      h('div', { className: 'hero-actions' }, sendBtn, receiveBtn)),
+    h('div', { className: 'app-top' }, appHead(), modeSwitch()),
+    hero(w, sendBtn, receiveBtn),
     waiting ? h('div', { className: 'banner' },
       h('span', { textContent: `${waiting} ${waiting === 1 ? 'transacción espera' : 'transacciones esperan'} un bloque para confirmarse.` }),
       h('button', { type: 'button', className: 'btn btn-sm', textContent: 'Minar bloque', onclick: mine, disabled: Boolean(S.busy) })) : null,
@@ -523,7 +553,7 @@ const recipientAccount = (r) => r?.person ?? r?.owner ?? null;
 const toLabel = (e) => (e.to ? cap(e.to) : shortAddr(e.toAddress));
 
 function openSend() {
-  S.send = { toText: cap(other(S.account)), mode: 'private', switched: false, notice: null, amounts: { private: '17', public: '0,3' }, phase: 'form', steps: [], entry: null, error: null };
+  S.send = { toText: cap(other(S.account)), mode: S.mode, switched: false, notice: null, amounts: { private: '17', public: '0,3' }, phase: 'form', steps: [], entry: null, error: null };
   renderSend();
   $('send-amount')?.querySelector('input')?.focus();
 }
@@ -746,7 +776,7 @@ async function submitSend() {
 // ---- Receive ----
 
 async function openReceive() {
-  S.receive = { mode: 'private', data: null, copied: null };
+  S.receive = { mode: S.mode, data: null, copied: null };
   renderReceive();
   const person = S.account;
   const r = await call(`direcciones de ${person}`, 'address', { person }, { quiet: true });

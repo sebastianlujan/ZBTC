@@ -107,7 +107,7 @@ test('rejects amounts the wallet cannot send', async () => {
   await typeAmount('2.5');
   await expect(page.locator('#send-hint')).toHaveText('El monto debe ser un número entero de ZBTC.');
   await expect(page.locator('#send-submit')).toBeDisabled();
-  await page.getByRole('radio', { name: /Público/ }).click();
+  await sheet().getByRole('radio', { name: /Público/ }).click();
   await typeAmount('0,95');
   await expect(page.locator('#send-hint')).toHaveClass(/bad/);
   await expect(page.locator('#send-submit')).toBeDisabled();
@@ -117,7 +117,7 @@ test('rejects amounts the wallet cannot send', async () => {
 
 test('sends BTC publicly and opens it in the explorer', async () => {
   await openSend();
-  await page.getByRole('radio', { name: /Público/ }).click();
+  await sheet().getByRole('radio', { name: /Público/ }).click();
   await typeAmount('0,25');
   await expect(page.locator('#send-submit')).toHaveText('Enviar 0,25 BTC en público');
   await page.locator('#send-submit').click();
@@ -162,10 +162,27 @@ test('receive shows a shielded and a transparent address', async () => {
   await page.getByRole('button', { name: 'Recibir', exact: true }).click();
   // A shielded address is "zbtcrt" followed by the hex of the owner and encryption keys.
   await expect(page.locator('.address code')).toHaveText(/^zbtcrt[0-9a-f]{128}$/);
-  await page.getByRole('radio', { name: /Pública/ }).click();
+  await sheet().getByRole('radio', { name: /Pública/ }).click();
   await expect(page.locator('.address code')).toHaveText(/^bcrt1/);
   await page.keyboard.press('Escape');
   await expect(sheet()).toBeHidden();
+});
+
+test('switches the wallet between private and public mode', async () => {
+  const modes = page.getByRole('radiogroup', { name: 'Modo de la wallet' });
+  await modes.getByRole('radio', { name: 'Público' }).click();
+  await expect(page.locator('.hero-label')).toHaveText('Saldo público · Bitcoin');
+  await expect(page.locator('.balance .unit')).toHaveText('BTC');
+  // Send and Receive open in the wallet's mode.
+  await page.getByRole('button', { name: 'Enviar', exact: true }).click();
+  await expect(sheet().getByRole('radio', { name: /Público/ })).toHaveAttribute('aria-checked', 'true');
+  await page.getByRole('button', { name: 'Cancelar' }).click();
+  await page.getByRole('button', { name: 'Recibir', exact: true }).click();
+  await expect(page.locator('.address code')).toHaveText(/^bcrt1/);
+  await page.keyboard.press('Escape');
+  await modes.getByRole('radio', { name: 'Privado' }).click();
+  await expect(page.locator('.hero-label')).toHaveText('Saldo protegido · ZBTC');
+  await expect(page.locator('.balance .unit')).toHaveText('ZBTC');
 });
 
 /** bitcoin-cli against the tests' own node. */
@@ -211,9 +228,9 @@ test('pasting a Bitcoin address switches to public and pays outside the demo', a
   bitcoinCli('-named', 'createwallet', 'wallet_name=outsider', 'load_on_startup=false');
   const outside = bitcoinCli('-rpcwallet=outsider', 'getnewaddress');
   await openSend();
-  await expect(page.getByRole('radio', { name: /Privado/ })).toHaveAttribute('aria-checked', 'true');
+  await expect(sheet().getByRole('radio', { name: /Privado/ })).toHaveAttribute('aria-checked', 'true');
   await recipientField().fill(outside);
-  await expect(page.getByRole('radio', { name: /Público/ })).toHaveAttribute('aria-checked', 'true');
+  await expect(sheet().getByRole('radio', { name: /Público/ })).toHaveAttribute('aria-checked', 'true');
   await expect(page.locator('#send-to-hint')).toContainText('Modo cambiado a Público');
   await typeAmount('0,1');
   await page.locator('#send-submit').click();
