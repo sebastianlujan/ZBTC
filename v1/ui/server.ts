@@ -27,9 +27,13 @@ import { bigIntToBytes, bytesToHex, decodeAddress, decryptNote, noteMatches } fr
 import { Wallet } from '../src/wallet.js';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
-const DATADIR = path.join(ROOT, '.regtest');
-const ZBTC_DIR = path.join(ROOT, '.zbtc');
+/** Where the chain and the wallets live. Tests point it at a throwaway directory. */
+const STATE_DIR = path.resolve(process.env.ZBTC_UI_STATE ?? ROOT);
+const DATADIR = path.join(STATE_DIR, '.regtest');
+const ZBTC_DIR = path.join(STATE_DIR, '.zbtc');
 const WALLETS_DIR = path.join(ZBTC_DIR, 'wallets');
+/** The datadir as the command lines show it: commands run from ROOT. */
+const DATADIR_ARG = path.relative(ROOT, DATADIR);
 const TSX = path.join(ROOT, 'node_modules', '.bin', 'tsx');
 
 /** The page's files, served as they are on disk so edits show on reload. */
@@ -190,7 +194,7 @@ type CommandLine = [cmd: string, file: string, args: string[]];
 
 function runCommand([cmd, file, args]: CommandLine): Promise<Run> {
   return new Promise((resolve) => {
-    execFile(file, args, { cwd: ROOT, env: { ...process.env, FORCE_COLOR: '0' } }, (error, stdout, stderr) => {
+    execFile(file, args, { cwd: ROOT, env: { ...process.env, FORCE_COLOR: '0', ZBTC_DIR } }, (error, stdout, stderr) => {
       resolve({ cmd, out: (stdout + stderr).trim(), ok: error === null });
     });
   });
@@ -283,7 +287,7 @@ async function stopNode(t: Transcript): Promise<void> {
 function startNode(t: Transcript): Promise<string> {
   const flags = ['-daemon', '-server=1', '-txindex=1', '-fallbackfee=0.0002', '-listen=0'];
   return t.exec('Iniciar una red Bitcoin privada (regtest) en esta máquina', [
-    `bitcoind -regtest -datadir=.regtest -rpcport=${RPC_PORT} ${flags.join(' ')}`,
+    `bitcoind -regtest -datadir=${DATADIR_ARG} -rpcport=${RPC_PORT} ${flags.join(' ')}`,
     'bitcoind',
     [...nodeArgs(), ...flags],
   ]);
@@ -295,15 +299,15 @@ async function reset(t: Transcript): Promise<void> {
   await stopNode(t);
   rmSync(DATADIR, { recursive: true, force: true });
   rmSync(ZBTC_DIR, { recursive: true, force: true });
-  mkdirSync(DATADIR);
-  t.note('Borrar la cadena y las billeteras de la demo anterior', 'rm -rf .regtest .zbtc');
+  mkdirSync(DATADIR, { recursive: true });
+  t.note('Borrar la cadena y las billeteras de la demo anterior', `rm -rf ${DATADIR_ARG} ${path.relative(ROOT, ZBTC_DIR)}`);
   await startNode(t);
   await t.bcli('Esperar a que el nodo responda', '-rpcwait', 'getblockcount');
   await t.zbtc(
     'Crear la billetera minera y minar 101 bloques para que sus monedas se puedan gastar',
     'init',
     '--datadir',
-    '.regtest',
+    DATADIR_ARG,
     '--rpcport',
     String(RPC_PORT),
   );
