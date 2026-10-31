@@ -14,6 +14,7 @@ export default defineConfig({
   timeout: 180_000,
   expect: { timeout: 90_000 },
   reporter: [['list']],
+  globalSetup: './test/ui/setup.ts',
   globalTeardown: './test/ui/teardown.ts',
   use: {
     baseURL: `http://127.0.0.1:${HTTP_PORT}`,
@@ -23,7 +24,9 @@ export default defineConfig({
     trace: 'retain-on-failure',
   },
   webServer: {
-    command: './node_modules/.bin/tsx ui/server.ts',
+    // One node process (tsx as a loader, not a wrapper that forks), so stopping it leaves no orphan.
+    command: 'node --import tsx ui/server.ts',
+    gracefulShutdown: { signal: 'SIGTERM', timeout: 5_000 },
     url: `http://127.0.0.1:${HTTP_PORT}/app.js`,
     env: { PORT: String(HTTP_PORT), RPCPORT: String(RPC_PORT), ZBTC_UI_STATE: STATE_DIR },
     reuseExistingServer: false,

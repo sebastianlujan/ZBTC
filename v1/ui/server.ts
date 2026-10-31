@@ -57,6 +57,7 @@ const MAX_PAYMENT_BTC = 0.9;
 const MAX_UNITS = 1_000_000;
 const MAX_BODY_BYTES = 1024;
 const NODE_STOP_TIMEOUT_MS = 20_000;
+const NODE_START_TIMEOUT_S = 60;
 const NODE_STOP_POLL_MS = 200;
 /** Note values are u64 little-endian in the plaintext; the leak check looks for those bytes. */
 const U64_BYTES = 8;
@@ -307,7 +308,8 @@ async function reset(t: Transcript): Promise<void> {
   mkdirSync(DATADIR, { recursive: true });
   t.note('Borrar la cadena y las billeteras de la demo anterior', `rm -rf ${DATADIR_ARG} ${path.relative(ROOT, ZBTC_DIR)}`);
   await startNode(t);
-  await t.bcli('Esperar a que el nodo responda', '-rpcwait', 'getblockcount');
+  // Bounded: a node that never comes up must fail the reset, not hang it forever.
+  await t.bcli('Esperar a que el nodo responda (hasta 60 s)', '-rpcwait', `-rpcwaittimeout=${NODE_START_TIMEOUT_S}`, 'getblockcount');
   await t.zbtc(
     'Crear la billetera minera y minar 101 bloques para que sus monedas se puedan gastar',
     'init',

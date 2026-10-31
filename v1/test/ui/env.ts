@@ -5,3 +5,5 @@ import path from 'node:path';
 export const HTTP_PORT = 8743;
 export const RPC_PORT = 18743;
 export const STATE_DIR = path.resolve(import.meta.dirname, '../../.ui-test');
+/** Holds the pid of the run that owns STATE_DIR and its node. */
+export const LOCK_FILE = path.join(STATE_DIR, 'run.lock');
