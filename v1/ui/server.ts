@@ -57,6 +57,7 @@ const MAX_PAYMENT_BTC = 0.9;
 const MAX_UNITS = 1_000_000;
 const MAX_BODY_BYTES = 1024;
 const NODE_STOP_TIMEOUT_MS = 20_000;
+const NODE_START_TIMEOUT_S = 60;
 const NODE_STOP_POLL_MS = 200;
 /** Note values are u64 little-endian in the plaintext; the leak check looks for those bytes. */
 const U64_BYTES = 8;
@@ -140,7 +141,10 @@ interface ActivityEntry {
   kind: 'genesis' | 'transparent' | 'shielded';
   txid: string | null;
   from: Person | null;
-  to: Person;
+  /** The demo account that received it, or null for an address outside the demo. */
+  to: Person | null;
+  /** The address it went to, whether a demo account's or a pasted one. */
+  toAddress?: string;
   /** BTC for transparent, units for shielded and genesis, as entered. */
   amount: string;
   time: number;
@@ -168,6 +172,8 @@ interface WalletView {
   notes: NoteRow[];
   /** The person's ordinary Bitcoin wallet, which pays fees. */
   fee: { confirmed: number; unconfirmed: number };
+  /** The account's shielded address, public by design, so the page can recognize it when pasted. */
+  address: string;
 }
 
 interface ChainState {
@@ -302,7 +308,8 @@ async function reset(t: Transcript): Promise<void> {
   mkdirSync(DATADIR, { recursive: true });
   t.note('Borrar la cadena y las billeteras de la demo anterior', `rm -rf ${DATADIR_ARG} ${path.relative(ROOT, ZBTC_DIR)}`);
   await startNode(t);
-  await t.bcli('Esperar a que el nodo responda', '-rpcwait', 'getblockcount');
+  // Bounded: a node that never comes up must fail the reset, not hang it forever.
+  await t.bcli('Esperar a que el nodo responda (hasta 60 s)', '-rpcwait', `-rpcwaittimeout=${NODE_START_TIMEOUT_S}`, 'getblockcount');
   await t.zbtc(
     'Crear la billetera minera y minar 101 bloques para que sus monedas se puedan gastar',
     'init',
@@ -422,9 +429,9 @@ function leakChecks(tx: PublicTx, units: string, recipient: string): LeakCheck[]
 
 function readEnvelope(tx: PublicTx): { env: Envelope; vout: number; bytes: Uint8Array } {
   const found = extractEnvelope({ vout: tx.outputs.map((o) => ({ scriptPubKey: { hex: o.data ?? '' } })) });
-  if (found.kind !== 'envelope') throw new BadRequest(`la transacción ${tx.txid} no tiene un sobre ZBTC`);
+  if (found.kind !== 'envelope') throw new BadRequest(`la transacción ${tx.txid} no tiene un envelope ZBTC`);
   const parsed = parse(found.bytes);
-  if (!parsed.ok) throw new Error(`el sobre de ${tx.txid} no se puede leer: ${parsed.reason}`);
+  if (!parsed.ok) throw new Error(`el envelope de ${tx.txid} no se puede leer: ${parsed.reason}`);
   return { env: parsed.env, vout: found.vout, bytes: found.bytes };
 }
 
@@ -479,8 +486,39 @@ function parseNotes(output: string): NoteRow[] {
 
 const BALANCE_LINE = /^(\w+): (\d+) units \(spendable (\d+), pending (\d+), incoming (\d+) not counted\)$/;
 
-async function payTransparent(t: Transcript, from: Person, to: Person, btc: string) {
-  const address = await t.bcli(`La fee wallet de ${title(to)} genera una dirección nueva para cobrar`, `-rpcwallet=${feeWallet(to)}`, 'getnewaddress');
+/** A recipient as the page sends it: a demo account by name, or an address someone pasted. */
+type Target = { person: Person } | { address: string };
+
+/** The demo account whose shielded address this is, if any. */
+function shieldedOwner(address: string): Person | null {
+  return PEOPLE.find((p) => Wallet.load(WALLETS_DIR, p).address() === address) ?? null;
+}
+
+/** The demo account whose fee wallet owns this Bitcoin address, if any. */
+async function transparentOwner(t: Transcript, address: string): Promise<Person | null> {
+  for (const p of PEOPLE) {
+    const info = JSON.parse(
+      await t.bcli(`Ver si la dirección es de la fee wallet de ${title(p)}`, `-rpcwallet=${feeWallet(p)}`, 'getaddressinfo', address),
+    ) as { ismine: boolean };
+    if (info.ismine) return p;
+  }
+  return null;
+}
+
+async function payTransparent(t: Transcript, from: Person, target: Target, btc: string) {
+  let to: Person | null;
+  let address: string;
+  if ('person' in target) {
+    to = target.person;
+    if (to === from) throw new BadRequest('el destino es tu propia cuenta');
+    address = await t.bcli(`La fee wallet de ${title(to)} genera una dirección nueva para cobrar`, `-rpcwallet=${feeWallet(to)}`, 'getnewaddress');
+  } else {
+    address = target.address;
+    const check = JSON.parse(await t.bcli('Validar la dirección pegada', 'validateaddress', address)) as { isvalid: boolean };
+    if (!check.isvalid) throw new BadRequest(`no es una dirección Bitcoin válida: ${address}`);
+    to = await transparentOwner(t, address);
+    if (to === from) throw new BadRequest('es una dirección de tu propia fee wallet');
+  }
   const txid = await t.bcli(
     `La fee wallet de ${title(from)} firma y difunde un pago Bitcoin común`,
     `-rpcwallet=${feeWallet(from)}`,
@@ -494,6 +532,7 @@ async function payTransparent(t: Transcript, from: Person, to: Person, btc: stri
     txid,
     from,
     to,
+    toAddress: address,
     amount: btc,
     time: Date.now(),
     recipientAddress: address,
@@ -503,25 +542,60 @@ async function payTransparent(t: Transcript, from: Person, to: Person, btc: stri
   return entry;
 }
 
-async function sendShielded(t: Transcript, from: Person, to: Person, units: string) {
+async function sendShielded(t: Transcript, from: Person, target: Target, units: string) {
+  let to: Person | null;
+  let address: string;
+  if ('person' in target) {
+    to = target.person;
+    if (to === from) throw new BadRequest('el destino es tu propia cuenta');
+    address = await t.zbtc(`Dirección ZBTC protegida de ${title(to)}, para buscar sus claves en la transacción`, 'address', to);
+  } else {
+    address = target.address;
+    try {
+      decodeAddress(address);
+    } catch {
+      throw new BadRequest(`no es una dirección protegida válida: ${address.slice(0, 16)}…`);
+    }
+    to = shieldedOwner(address);
+    t.note(
+      'Ver si la dirección pegada es de alguna cuenta de la demo',
+      `comparar con las direcciones de ${PEOPLE.join(' y ')}`,
+      to ? `es la dirección de ${to}` : 'no es de ninguna cuenta de la demo',
+    );
+    if (to === from) throw new BadRequest('es tu propia dirección');
+  }
   const sent = await t.zbtc(
     `La billetera de ${title(from)} elige notas, prueba el gasto en conocimiento cero, cifra las notas nuevas y difunde una sola transacción Bitcoin`,
     'send',
     from,
-    to,
+    'person' in target ? target.person : address,
     units,
   );
   const txid = fieldOf(sent, 'txid');
   const { tx } = await readTx(t, txid);
-  const recipient = await t.zbtc(`Dirección ZBTC pública de ${title(to)}, para buscar sus claves en la transacción`, 'address', to);
-  await t.zbtc(`La billetera de ${title(to)} intenta abrir cada nota nueva con su clave`, 'notes', to);
-  const opened = openedBy(readEnvelope(tx).env, to);
-  t.note(
-    `Ver cuál de las dos salidas del sobre abre la clave de ${title(to)}, con el mismo descifrado que usa zbtc notes`,
-    `decryptNote(clave de ${to}, salidas 1 y 2 del sobre)`,
-    describeOpened(opened),
-  );
-  const entry: ActivityEntry = { kind: 'shielded', txid, from, to, amount: units, time: Date.now(), opened, checks: leakChecks(tx, units, recipient) };
+  let opened: OpenedNote[] = [];
+  if (to) {
+    await t.zbtc(`La billetera de ${title(to)} intenta abrir cada nota nueva con su clave`, 'notes', to);
+    opened = openedBy(readEnvelope(tx).env, to);
+    t.note(
+      `Ver cuál de las dos salidas del envelope abre la clave de ${title(to)}, con el mismo descifrado que usa zbtc notes`,
+      `decryptNote(clave de ${to}, salidas 1 y 2 del envelope)`,
+      describeOpened(opened),
+    );
+  } else {
+    t.note('Nadie en la demo tiene la clave de esa dirección', 'decryptNote: sin clave', 'la nota nueva queda cerrada para todas las cuentas de la demo');
+  }
+  const entry: ActivityEntry = {
+    kind: 'shielded',
+    txid,
+    from,
+    to,
+    toAddress: address,
+    amount: units,
+    time: Date.now(),
+    opened,
+    checks: leakChecks(tx, units, address),
+  };
   activity.push(entry);
   return entry;
 }
@@ -574,7 +648,7 @@ async function blockDetail(t: Transcript, ref: string) {
 async function decryptAs(t: Transcript, txid: string, person: Person) {
   const { tx } = await readTx(t, txid);
   const opened = openedBy(readEnvelope(tx).env, person);
-  t.note(`Probar la clave de ${title(person)} en cada nota del sobre, como hace su billetera`, `decryptNote(clave de ${person}, salidas 1 y 2 del sobre)`, describeOpened(opened));
+  t.note(`Probar la clave de ${title(person)} en cada nota del envelope, como hace su billetera`, `decryptNote(clave de ${person}, salidas 1 y 2 del envelope)`, describeOpened(opened));
   return { txid, person, opened };
 }
 
@@ -620,6 +694,7 @@ async function chainState(t: Transcript): Promise<ChainState | null> {
       pending: Number(b.pending),
       incoming: Number(b.incoming),
       notes: parseNotes(notes[i]),
+      address: Wallet.load(WALLETS_DIR, name).address(),
       fee: { confirmed: fees[i].trusted, unconfirmed: fees[i].untrusted_pending },
     };
   });
@@ -643,11 +718,14 @@ function person(x: unknown): Person {
   return x as Person;
 }
 
-function parties(body: Record<string, unknown>): [Person, Person] {
-  const from = person(body.from);
-  const to = person(body.to);
-  if (from === to) throw new BadRequest('el origen y el destino deben ser distintos');
-  return [from, to];
+/** Pasted addresses reach bitcoin-cli and zbtc as arguments: letters and digits only, so none can pass as an option. */
+const PASTED_ADDRESS = /^[A-Za-z0-9]{8,200}$/;
+
+function target(body: Record<string, unknown>): Target {
+  if (body.toAddress === undefined) return { person: person(body.to) };
+  const address = String(body.toAddress).trim();
+  if (!PASTED_ADDRESS.test(address)) throw new BadRequest('la dirección solo puede tener letras y números');
+  return { address };
 }
 
 function btcAmount(x: unknown): string {
@@ -686,8 +764,8 @@ const ACTIONS: Record<string, Action> = {
   '/api/reset': (t) => reset(t),
   '/api/mine': (t) => t.zbtc('Minar un bloque: las transacciones en espera se confirman', 'mine', '1'),
   '/api/state': (t) => chainState(t),
-  '/api/transparent': (t, b) => payTransparent(t, ...parties(b), btcAmount(b.amount)),
-  '/api/shielded': (t, b) => sendShielded(t, ...parties(b), unitAmount(b.amount)),
+  '/api/transparent': (t, b) => payTransparent(t, person(b.from), target(b), btcAmount(b.amount)),
+  '/api/shielded': (t, b) => sendShielded(t, person(b.from), target(b), unitAmount(b.amount)),
   '/api/tx': (t, b) => txDetail(t, txidParam(b.txid)),
   '/api/blocks': (t) => recentBlocks(t),
   '/api/block': (t, b) => blockDetail(t, blockParam(b.ref)),

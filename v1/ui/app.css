@@ -96,13 +96,24 @@ main { overflow: hidden; min-width: 0; }
 .app-head .who { display: flex; align-items: center; gap: 10px; font-weight: 600; }
 .avatar.lg { width: 32px; height: 32px; border-radius: 10px; font-size: 13px; }
 .wallet { display: grid; gap: 36px; }
+.app-top { display: grid; gap: 18px; }
+
+/* Private | public: the wallet's mode, green for shielded and red for transparent. */
+.mode-switch { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 4px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg-elev); }
+.mode-switch button { display: flex; align-items: center; justify-content: center; gap: 8px; height: 38px; border: 0; border-radius: 9px; background: transparent; color: var(--muted); font-weight: 600; cursor: pointer; transition: background 200ms var(--ease), color 200ms var(--ease); }
+.mode-switch button:hover { color: var(--text); }
+.mode-switch button.private[aria-checked="true"] { background: var(--green-bg); color: var(--green); }
+.mode-switch button.public[aria-checked="true"] { background: var(--red-bg); color: var(--red); }
 
 /* ---- Wallet ---- */
 .hero { display: grid; justify-items: center; gap: 14px; padding: 28px 0 4px; text-align: center; }
 .hero-label { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; }
 .hero-label .icon { color: var(--green); }
+.hero.public .hero-label .icon { color: var(--red); }
 .balance { display: flex; align-items: baseline; gap: 10px; }
 .balance .amount { font-size: 54px; font-weight: 600; letter-spacing: -0.04em; line-height: 1; font-variant-numeric: tabular-nums; }
+/* A BTC balance has eight decimals, so it needs a smaller size to fit the screen. */
+.balance .amount.long { font-size: 38px; }
 .balance .unit { font-size: 20px; font-weight: 500; color: var(--muted); }
 .hero-sub { color: var(--muted); font-size: 13px; }
 .hero-actions { display: flex; gap: 12px; margin-top: 20px; width: 100%; }
@@ -225,6 +236,14 @@ main { overflow: hidden; min-width: 0; }
 .phone-toast { position: absolute; top: 56px; left: 10px; right: 10px; z-index: 6; pointer-events: none; }
 .toast { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-radius: 18px; border: 1px solid var(--border-strong); background: rgba(28, 28, 28, 0.92); backdrop-filter: blur(16px); box-shadow: 0 16px 40px -16px rgba(0, 0, 0, 0.9); font-size: 13px; animation: rise 300ms var(--ease); pointer-events: auto; }
 .toast.bad { border-color: rgba(255, 99, 105, 0.4); color: var(--red); }
+
+/* Recipient: a pasted address or a contact. Addresses are long, so they get the mono face. */
+#send-to { font: 500 13px var(--mono); text-overflow: ellipsis; }
+.input-wrap .btn-sm { flex: none; height: 28px; }
+.contacts { display: flex; flex-wrap: wrap; gap: 8px; }
+.contact { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px 0 4px; border: 1px solid var(--border-strong); border-radius: 999px; background: transparent; color: var(--muted); font-size: 12.5px; font-weight: 500; cursor: pointer; transition: border-color 150ms var(--ease), color 150ms var(--ease); }
+.contact:hover { color: var(--text); }
+.contact[aria-pressed="true"] { border-color: var(--text); color: var(--text); background: var(--bg-soft); }
 
 /* ---- Side panel: terminal | explorer | debug ---- */
 .panel { position: relative; display: flex; flex-direction: column; width: 0; min-height: 0; background: var(--term-bg); border-left: 1px solid var(--border); color: var(--term-text); font: 12.5px/1.55 var(--mono); overflow: hidden; }

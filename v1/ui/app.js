@@ -65,6 +65,8 @@ const S = {
   chain: null,
   loaded: false,
   account: 'alice',
+  /** The wallet's mode: 'private' shows and sends shielded ZBTC, 'public' plain Bitcoin. */
+  mode: 'private',
   busy: null,
   progress: [],
   toast: null,
@@ -392,11 +394,11 @@ function activityRows(person) {
       amount = `+${zbtc(e.amount)}`;
       sub = 'génesis de la demo';
     } else if (e.kind === 'shielded') {
-      title = outgoing ? `Enviado a ${cap(e.to)}` : 'Recibido';
+      title = outgoing ? `Enviado a ${toLabel(e)}` : 'Recibido';
       amount = outgoing ? `−${zbtc(e.amount)}` : `+${zbtc(sum((e.opened ?? []).map((o) => o.units)))}`;
       sub = outgoing ? `privado · ${timeAgo(e.time)}` : `privado · remitente oculto · ${timeAgo(e.time)}`;
     } else {
-      title = outgoing ? `Enviado a ${cap(e.to)}` : 'Recibido';
+      title = outgoing ? `Enviado a ${toLabel(e)}` : 'Recibido';
       amount = `${outgoing ? '−' : '+'}${btc(Number(e.amount))}`;
       sub = outgoing ? `público · ${timeAgo(e.time)}` : `público · de ${shortAddr(e.senderAddresses?.[0])} · ${timeAgo(e.time)}`;
     }
@@ -417,6 +419,41 @@ function appHead() {
     h('span', { className: 'chain-pill up' }, h('span', { className: 'dot' }), h('span', { textContent: `regtest · ${S.chain.height}` })));
 }
 
+/** Private or public: switches the balance on show and the mode Send and Receive open in. */
+function modeSwitch() {
+  const option = (mode, label, iconName) => {
+    const b = h('button', { type: 'button', className: mode, attrs: { role: 'radio', 'aria-checked': String(S.mode === mode) } }, icon(iconName), label);
+    b.onclick = () => {
+      S.mode = mode;
+      renderWallet();
+    };
+    return b;
+  };
+  return h('div', { className: 'mode-switch', attrs: { role: 'radiogroup', 'aria-label': 'Modo de la wallet' } },
+    option('private', 'Privado', 'shield'), option('public', 'Público', 'eye'));
+}
+
+/** The big balance: shielded ZBTC in private mode, the fee wallet's BTC in public mode. */
+function hero(w, sendBtn, receiveBtn) {
+  if (S.mode === 'public') {
+    const total = w.fee.confirmed + w.fee.unconfirmed;
+    return h('section', { className: 'hero public' },
+      h('div', { className: 'hero-label' }, icon('eye'), 'Saldo público · Bitcoin'),
+      h('div', { className: 'balance' }, h('span', { className: 'amount long', textContent: BTC_FORMAT.format(total) }), h('span', { className: 'unit', textContent: 'BTC' })),
+      h('p', { className: 'hero-sub', textContent: w.fee.unconfirmed ? `${btc(w.fee.unconfirmed)} sin confirmar · cualquiera ve estos movimientos` : 'Cualquiera ve los movimientos de este saldo' }),
+      h('div', { className: 'hero-actions' }, sendBtn, receiveBtn));
+  }
+  const after = afterNextBlock(w);
+  return h('section', { className: 'hero' },
+    h('div', { className: 'hero-label' }, icon('shield'), 'Saldo protegido · ZBTC'),
+    h('div', { className: 'balance' },
+      h('span', { className: 'amount', textContent: String(after) }),
+      h('span', { className: 'unit', textContent: 'ZBTC' }),
+      h('span', { className: 'info', tabIndex: 0, textContent: '?', attrs: { 'data-tip': UNITS_TIP, 'aria-label': UNITS_TIP } })),
+    h('p', { className: 'hero-sub', textContent: w.spendable === after ? 'Todo disponible para enviar' : `${zbtc(w.spendable)} disponibles ahora · el resto se confirma con el próximo bloque` }),
+    h('div', { className: 'hero-actions' }, sendBtn, receiveBtn));
+}
+
 function renderWallet() {
   const main = $('app');
   if (!S.loaded) {
@@ -435,15 +472,8 @@ function renderWallet() {
   const transfersMade = S.chain.activity.some((e) => e.kind !== 'genesis');
 
   main.replaceChildren(h('div', { className: 'wallet' },
-    appHead(),
-    h('section', { className: 'hero' },
-      h('div', { className: 'hero-label' }, icon('shield'), 'Saldo protegido'),
-      h('div', { className: 'balance' },
-        h('span', { className: 'amount', textContent: String(after) }),
-        h('span', { className: 'unit', textContent: 'ZBTC' }),
-        h('span', { className: 'info', tabIndex: 0, textContent: '?', attrs: { 'data-tip': UNITS_TIP, 'aria-label': UNITS_TIP } })),
-      h('p', { className: 'hero-sub', textContent: w.spendable === after ? 'Todo disponible para enviar' : `${zbtc(w.spendable)} disponibles ahora · el resto se confirma con el próximo bloque` }),
-      h('div', { className: 'hero-actions' }, sendBtn, receiveBtn)),
+    h('div', { className: 'app-top' }, appHead(), modeSwitch()),
+    hero(w, sendBtn, receiveBtn),
     waiting ? h('div', { className: 'banner' },
       h('span', { textContent: `${waiting} ${waiting === 1 ? 'transacción espera' : 'transacciones esperan'} un bloque para confirmarse.` }),
       h('button', { type: 'button', className: 'btn btn-sm', textContent: 'Minar bloque', onclick: mine, disabled: Boolean(S.busy) })) : null,
@@ -496,10 +526,53 @@ function closeSheet() {
 
 // ---- Send ----
 
+const SHIELDED_ADDRESS = /^zbtcrt[0-9a-f]{128}$/;
+// Regtest Bitcoin addresses: bech32 (bcrt1…) or base58 (m…, n…, 2…).
+const BTC_ADDRESS = /^(bcrt1[02-9ac-hj-np-z]{8,87}|[mn2][1-9A-HJ-NP-Za-km-z]{25,34})$/;
+
+/**
+ * What the text in "Para" names: a demo account by name, a shielded or a Bitcoin address, or
+ * nothing valid. A pasted shielded address of a demo account also carries that account as `owner`.
+ */
+function recipientOf(text) {
+  const t = text.trim();
+  const person = PEOPLE.find((p) => p === t.toLowerCase());
+  if (person) return { person, label: cap(person) };
+  if (SHIELDED_ADDRESS.test(t)) {
+    const owner = S.chain?.wallets.find((w) => w.address === t)?.name ?? null;
+    return { address: t, owner, mode: 'private', label: owner ? cap(owner) : shortAddr(t) };
+  }
+  if (BTC_ADDRESS.test(t)) return { address: t, owner: null, mode: 'public', label: shortAddr(t) };
+  return null;
+}
+
+/** The demo account a recipient is, whether chosen as a contact or recognized from its address. */
+const recipientAccount = (r) => r?.person ?? r?.owner ?? null;
+
+/** Who a transfer went to, for lists: the account's name, or the start and end of the address. */
+const toLabel = (e) => (e.to ? cap(e.to) : shortAddr(e.toAddress));
+
 function openSend() {
-  S.send = { to: other(S.account), mode: 'private', amounts: { private: '17', public: '0,3' }, phase: 'form', steps: [], entry: null, error: null };
+  S.send = { toText: cap(other(S.account)), mode: S.mode, switched: false, notice: null, amounts: { private: '17', public: '0,3' }, phase: 'form', steps: [], entry: null, error: null };
   renderSend();
-  $('sheet-layer').querySelector('.sheet input')?.focus();
+  $('send-amount')?.querySelector('input')?.focus();
+}
+
+function recipientCheck() {
+  const s = S.send;
+  if (!s.toText.trim()) return { ok: false, hint: 'Escribir o pegar una dirección, o elegir un contacto.' };
+  const r = recipientOf(s.toText);
+  if (!r) return { ok: false, bad: true, hint: 'No es una dirección válida: una protegida empieza con zbtcrt y una de Bitcoin con bcrt1.' };
+  if (recipientAccount(r) === S.account) return { ok: false, bad: true, hint: 'Es tu propia cuenta.' };
+  if (r.address && r.mode !== s.mode) {
+    return { ok: false, bad: true, hint: r.mode === 'private' ? 'Es una dirección protegida: usar el modo Privado.' : 'Es una dirección Bitcoin: usar el modo Público.' };
+  }
+  let hint;
+  if (r.person) hint = s.mode === 'private' ? `A la dirección protegida de ${r.label}.` : `A una dirección Bitcoin nueva de ${r.label}.`;
+  else if (r.owner) hint = `Dirección protegida de ${r.label}.`;
+  else hint = s.mode === 'private' ? 'Dirección protegida, fuera de la demo.' : 'Dirección Bitcoin.';
+  if (s.switched) hint += ` Modo cambiado a ${s.mode === 'private' ? 'Privado' : 'Público'} según la dirección.`;
+  return { ok: true, recipient: r, hint };
 }
 
 function sendCheck() {
@@ -521,10 +594,21 @@ function sendCheck() {
 
 /** What the network will see, row by row, for the chosen mode. */
 function previewRows(mode) {
-  const to = cap(S.send.to);
   return mode === 'private'
     ? [['Quién envía', 'amber', 'Vinculado: la comisión sale de tu fee wallet'], ['Quién recibe', 'green', 'Oculto'], ['Monto', 'green', 'Oculto']]
-    : [['Quién envía', 'red', 'Visible: tu dirección'], ['Quién recibe', 'red', `Visible: la dirección de ${to}`], ['Monto', 'red', 'Visible']];
+    : [['Quién envía', 'red', 'Visible: tu dirección'], ['Quién recibe', 'red', recipientPreview()], ['Monto', 'red', 'Visible']];
+}
+
+function recipientPreview() {
+  const r = recipientOf(S.send.toText);
+  return r?.person ? `Visible: la dirección de ${r.label}` : 'Visible: esa dirección';
+}
+
+/** Puts the caret back at the end of "Para" after the form is rebuilt. */
+function focusRecipient() {
+  const input = $('send-to');
+  input?.focus();
+  input?.setSelectionRange(input.value.length, input.value.length);
 }
 
 function renderSend() {
@@ -562,15 +646,46 @@ function renderSend() {
       h('span', { className: 'mode-title' }, icon(iconName), title), h('span', { className: 'mode-sub', textContent: sub }));
     b.onclick = () => {
       s.mode = mode;
+      s.switched = false;
       renderSend();
     };
     return b;
   };
-  const to = h('select', {}, ...PEOPLE.filter((p) => p !== S.account).map((p) => h('option', { value: p, textContent: cap(p) })));
-  to.value = s.to;
+  const to = h('input', { id: 'send-to', value: s.toText, placeholder: 'Dirección o contacto', autocomplete: 'off', spellcheck: false, attrs: { 'aria-label': 'Para' } });
   to.addEventListener('input', () => {
-    s.to = to.value;
-    renderSend();
+    s.toText = to.value;
+    s.notice = null;
+    const r = recipientOf(s.toText);
+    // A pasted address decides the mode: shielded addresses go private, Bitcoin ones public.
+    if (r?.address && r.mode !== s.mode) {
+      s.mode = r.mode;
+      s.switched = true;
+      renderSend();
+      focusRecipient();
+      return;
+    }
+    updateSend();
+  });
+  const paste = h('button', { type: 'button', className: 'btn btn-sm', textContent: 'Pegar' });
+  paste.onclick = async () => {
+    try {
+      to.value = (await navigator.clipboard.readText()).trim();
+      to.dispatchEvent(new Event('input'));
+    } catch {
+      s.notice = 'El navegador no dejó leer el portapapeles: pegar con Cmd+V o Ctrl+V.';
+      updateSend();
+    }
+  };
+  const contacts = PEOPLE.filter((p) => p !== S.account).map((p) => {
+    const b = h('button', { type: 'button', className: 'contact', attrs: { 'data-person': p, 'aria-pressed': String(recipientAccount(recipientOf(s.toText)) === p) } },
+      h('span', { className: `avatar ${p}`, textContent: cap(p)[0] }), cap(p));
+    b.onclick = () => {
+      s.toText = cap(p);
+      s.switched = false;
+      s.notice = null;
+      renderSend();
+    };
+    return b;
   });
   const amount = h('input', { value: s.amounts[s.mode], inputMode: s.mode === 'private' ? 'numeric' : 'decimal', autocomplete: 'off', attrs: { 'aria-label': 'Monto' } });
   amount.addEventListener('input', () => {
@@ -584,7 +699,11 @@ function renderSend() {
 
   d.replaceChildren(head,
     h('div', { className: 'sheet-body' },
-      h('div', { className: 'field' }, h('label', { textContent: 'Para' }), h('div', { className: 'input-wrap' }, to)),
+      h('div', { className: 'field' },
+        h('label', { textContent: 'Para', htmlFor: 'send-to' }),
+        h('div', { className: 'input-wrap', id: 'send-to-wrap' }, to, paste),
+        h('div', { className: 'contacts', attrs: { role: 'group', 'aria-label': 'Contactos' } }, ...contacts),
+        h('p', { className: 'field-hint', id: 'send-to-hint' })),
       h('div', { className: 'field' }, h('span', { className: 'label', textContent: 'Modo' }),
         h('div', { className: 'modes', attrs: { role: 'radiogroup', 'aria-label': 'Modo' } },
           modeButton('private', 'Privado', 'ZBTC protegido', 'shield'),
@@ -594,23 +713,32 @@ function renderSend() {
         h('p', { className: 'field-hint', id: 'send-hint' })),
       h('div', { className: 'preview' },
         h('div', { className: 'preview-head', textContent: 'Lo que verá cualquiera en la red' }),
-        ...previewRows(s.mode).map(([what, tone, text]) => h('div', { className: 'preview-row' }, h('span', { className: 'what', textContent: what }), h('span', { className: `tag ${tone}`, textContent: text })))),
+        ...previewRows(s.mode).map(([what, tone, text]) => h('div', { className: 'preview-row' }, h('span', { className: 'what', textContent: what }),
+          h('span', { className: `tag ${tone}`, textContent: text, attrs: what === 'Quién recibe' ? { 'data-preview': 'to' } : {} })))),
       h('div', { id: 'send-mine' })),
     h('div', { className: 'sheet-foot' }, cancel, submit));
   updateSend();
 }
 
-/** Updates hint, button and amount state without rebuilding the form, so the input keeps focus. */
+/** Updates hints, preview and button without rebuilding the form, so the inputs keep focus. */
 function updateSend() {
   const s = S.send;
   const r = sendCheck();
   const hint = $('send-hint');
   if (!hint) return;
+  const to = recipientCheck();
+  const toHint = $('send-to-hint');
+  toHint.textContent = s.notice ?? to.hint;
+  toHint.className = to.bad || s.notice ? 'field-hint bad' : 'field-hint';
+  $('send-to-wrap').classList.toggle('bad', Boolean(to.bad));
+  for (const b of document.querySelectorAll('.contact')) b.setAttribute('aria-pressed', String(recipientAccount(to.recipient) === b.dataset.person));
+  const preview = document.querySelector('[data-preview="to"]');
+  if (preview && s.mode === 'public') preview.textContent = recipientPreview();
   hint.textContent = r.hint;
   hint.className = r.bad ? 'field-hint bad' : 'field-hint';
   $('send-amount').classList.toggle('bad', Boolean(r.bad));
   const submit = $('send-submit');
-  submit.disabled = !r.ok || Boolean(S.busy);
+  submit.disabled = !r.ok || !to.ok || Boolean(S.busy);
   const value = s.mode === 'private' ? zbtc(s.amounts.private.trim() || '0') : `${s.amounts.public.trim() || '0'} BTC`;
   submit.textContent = `Enviar ${value} ${s.mode === 'private' ? 'en privado' : 'en público'}`;
   $('send-mine').replaceChildren(r.mine ? h('button', { type: 'button', className: 'btn btn-sm', textContent: 'Minar bloque ahora', onclick: async () => { await mine(); renderSend(); } }) : '');
@@ -618,15 +746,18 @@ function updateSend() {
 
 async function submitSend() {
   const s = S.send;
-  if (!sendCheck().ok) return;
+  const to = recipientCheck();
+  if (!sendCheck().ok || !to.ok) return;
   const from = S.account;
   const amount = s.mode === 'private' ? s.amounts.private.trim() : decimal(s.amounts.public);
+  const { person, address, label: toText } = to.recipient;
+  const target = person ? { to: person } : { toAddress: address };
   s.phase = 'sending';
   s.steps = [];
   renderSend();
   await busy('Enviando', async () => {
-    const label = s.mode === 'private' ? `enviar ${amount} ZBTC en privado: ${from} → ${s.to}` : `enviar ${amount} BTC en público: ${from} → ${s.to}`;
-    const r = await call(label, s.mode === 'private' ? 'shielded' : 'transparent', { from, to: s.to, amount }, progressHooks(s.steps, renderSend));
+    const label = s.mode === 'private' ? `enviar ${amount} ZBTC en privado: ${from} → ${toText}` : `enviar ${amount} BTC en público: ${from} → ${toText}`;
+    const r = await call(label, s.mode === 'private' ? 'shielded' : 'transparent', { from, ...target, amount }, progressHooks(s.steps, renderSend));
     if (r.ok) {
       s.phase = 'done';
       s.entry = r.result;
@@ -645,7 +776,7 @@ async function submitSend() {
 // ---- Receive ----
 
 async function openReceive() {
-  S.receive = { mode: 'private', data: null, copied: null };
+  S.receive = { mode: S.mode, data: null, copied: null };
   renderReceive();
   const person = S.account;
   const r = await call(`direcciones de ${person}`, 'address', { person }, { quiet: true });
@@ -884,7 +1015,7 @@ function addressOwner(detail, side, address) {
   const e = detail.entry;
   if (!e || !address) return null;
   if (side === 'in') return `fee wallet de ${cap(e.from)}`;
-  return e.kind === 'transparent' && address === e.recipientAddress ? `pago a ${cap(e.to)}` : `vuelto a ${cap(e.from)}`;
+  return e.kind === 'transparent' && address === e.recipientAddress ? `pago a ${toLabel(e)}` : `vuelto a ${cap(e.from)}`;
 }
 
 function outerModel(detail) {
@@ -896,7 +1027,7 @@ function outerModel(detail) {
     { tone: 'neutral', title: `tx ${shortHex(tx.txid)}`, value: `${tx.vsize} vB`, full: tx.txid },
     [
       ...tx.outputs.map((o, n) => (envelope && n === envelope.vout
-        ? { tone: 'hidden', title: 'OP_RETURN · sobre zbtc', value: `0 BTC · ${envelope.hex.length / 2} B`, detail: 'monto y destino cifrados', amount: 0 }
+        ? { tone: 'hidden', title: 'OP_RETURN · envelope zbtc', value: `0 BTC · ${envelope.hex.length / 2} B`, detail: 'monto y destino cifrados', amount: 0 }
         : { tone, title: addressOwner(detail, 'out', o.address) ?? `salida ${n + 1}`, value: btc(o.btc), detail: shortAddr(o.address), full: o.address, amount: o.btc })),
       ...(tx.kind === 'coinbase' ? [] : [{ tone: 'neutral', title: 'comisión de red', value: btc(fee), detail: 'para el minero', amount: fee }]),
     ]);
@@ -1098,7 +1229,7 @@ function renderExplorerTx(detail) {
     ...tx.inputs.map((i, n) => kv(String(n + 1), i.address ? `${btc(i.btc)}  ${i.address}` : 'coinbase (moneda nueva)', addressOwner(detail, 'in', i.address))),
     th('salidas'),
     ...tx.outputs.map((o, n) => kv(String(n + 1), envelope && n === envelope.vout ? `${btc(o.btc)}  OP_RETURN · ${o.data.length / 2} bytes` : `${btc(o.btc)}  ${o.address ?? o.type}`,
-      envelope && n === envelope.vout ? 'sobre zbtc cifrado' : addressOwner(detail, 'out', o.address))),
+      envelope && n === envelope.vout ? 'envelope zbtc cifrado' : addressOwner(detail, 'out', o.address))),
   ];
 
   let innerArgs = null;
@@ -1117,7 +1248,7 @@ function renderExplorerTx(detail) {
       person && !opened ? loading(`probando la clave de ${person}…`) : null,
       person && opened ? comment(opened.length ? `la clave de ${person} abre ${opened.length === 1 ? 'una nota' : `${opened.length} notas`}; la otra sigue cerrada` : `la clave de ${person} no abre ninguna nota`) : null,
       HOSTS.inner,
-      h('div', { className: 'tl' }, tlink('→ debug: ver los 572 bytes del sobre', () => {
+      h('div', { className: 'tl' }, tlink('→ debug: ver los 572 bytes del envelope', () => {
         S.debug.txid = tx.txid;
         showTab('debug');
       })));
@@ -1195,7 +1326,7 @@ async function loadDebug() {
   if (!S.debug.txid && entries.length) S.debug.txid = entries[entries.length - 1].txid;
   const txid = S.debug.txid;
   if (!txid || S.explorer.txs.has(txid)) return;
-  const r = await call(`debug: decodificar el sobre ${shortHex(txid)}`, 'tx', { txid }, { quiet: true });
+  const r = await call(`debug: decodificar el envelope ${shortHex(txid)}`, 'tx', { txid }, { quiet: true });
   S.explorer.txs.set(txid, r.ok ? r.result : { error: r.error });
 }
 
@@ -1284,7 +1415,7 @@ function renderDebug() {
   if (!entries.length) parts.push(comment('todavía no hay transacciones protegidas'));
   else {
     parts.push(h('div', { className: 'tl' }, tok('key', 'tx'), tok('punct', ': '), ...entries.slice().reverse().flatMap((e) => {
-      const b = h('button', { type: 'button', className: 'tbtn', textContent: `${shortHex(e.txid)} (${e.amount} → ${e.to})`, attrs: { 'aria-pressed': String(e.txid === S.debug.txid) } });
+      const b = h('button', { type: 'button', className: 'tbtn', textContent: `${shortHex(e.txid)} (${e.amount} → ${e.to ?? shortAddr(e.toAddress)})`, attrs: { 'aria-pressed': String(e.txid === S.debug.txid) } });
       b.onclick = () => {
         S.debug.txid = e.txid;
         reloadPanel();
@@ -1293,14 +1424,14 @@ function renderDebug() {
     })));
     const detail = S.explorer.txs.get(S.debug.txid);
     const entry = entries.find((e) => e.txid === S.debug.txid);
-    if (!detail) parts.push(loading('decodificando el sobre…'));
+    if (!detail) parts.push(loading('decodificando el envelope…'));
     else if (detail.error) parts.push(h('div', { className: 'tl tok-red', textContent: `error: ${detail.error}` }));
     else {
       if (entry?.checks) {
         parts.push(th('búsqueda de fugas', true), comment(`¿aparecen en claro en los bytes públicos? (monto enviado: ${entry.amount})`),
           ...entry.checks.map((ch) => kv(LEAK_LABELS[ch.label] ?? ch.label, ch.inClear ? ['sí: fuga', 'red'] : ['no', 'green'])));
       }
-      parts.push(th('bytes del sobre', true), bytesView(detail.envelope));
+      parts.push(th('bytes del envelope', true), bytesView(detail.envelope));
       const raw = h('details', {}, h('summary', { className: 'tc', textContent: `# json crudo: bitcoin-cli getrawtransaction ${shortHex(S.debug.txid)} 2` }), h('pre', { className: 'tpre' }, highlight(detail.json, true)));
       parts.push(th('json', true), raw);
     }
