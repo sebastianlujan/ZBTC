@@ -429,9 +429,9 @@ function leakChecks(tx: PublicTx, units: string, recipient: string): LeakCheck[]
 
 function readEnvelope(tx: PublicTx): { env: Envelope; vout: number; bytes: Uint8Array } {
   const found = extractEnvelope({ vout: tx.outputs.map((o) => ({ scriptPubKey: { hex: o.data ?? '' } })) });
-  if (found.kind !== 'envelope') throw new BadRequest(`la transacción ${tx.txid} no tiene un sobre ZBTC`);
+  if (found.kind !== 'envelope') throw new BadRequest(`la transacción ${tx.txid} no tiene un envelope ZBTC`);
   const parsed = parse(found.bytes);
-  if (!parsed.ok) throw new Error(`el sobre de ${tx.txid} no se puede leer: ${parsed.reason}`);
+  if (!parsed.ok) throw new Error(`el envelope de ${tx.txid} no se puede leer: ${parsed.reason}`);
   return { env: parsed.env, vout: found.vout, bytes: found.bytes };
 }
 
@@ -578,8 +578,8 @@ async function sendShielded(t: Transcript, from: Person, target: Target, units: 
     await t.zbtc(`La billetera de ${title(to)} intenta abrir cada nota nueva con su clave`, 'notes', to);
     opened = openedBy(readEnvelope(tx).env, to);
     t.note(
-      `Ver cuál de las dos salidas del sobre abre la clave de ${title(to)}, con el mismo descifrado que usa zbtc notes`,
-      `decryptNote(clave de ${to}, salidas 1 y 2 del sobre)`,
+      `Ver cuál de las dos salidas del envelope abre la clave de ${title(to)}, con el mismo descifrado que usa zbtc notes`,
+      `decryptNote(clave de ${to}, salidas 1 y 2 del envelope)`,
       describeOpened(opened),
     );
   } else {
@@ -648,7 +648,7 @@ async function blockDetail(t: Transcript, ref: string) {
 async function decryptAs(t: Transcript, txid: string, person: Person) {
   const { tx } = await readTx(t, txid);
   const opened = openedBy(readEnvelope(tx).env, person);
-  t.note(`Probar la clave de ${title(person)} en cada nota del sobre, como hace su billetera`, `decryptNote(clave de ${person}, salidas 1 y 2 del sobre)`, describeOpened(opened));
+  t.note(`Probar la clave de ${title(person)} en cada nota del envelope, como hace su billetera`, `decryptNote(clave de ${person}, salidas 1 y 2 del envelope)`, describeOpened(opened));
   return { txid, person, opened };
 }
 

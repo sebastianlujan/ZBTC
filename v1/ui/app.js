@@ -997,7 +997,7 @@ function outerModel(detail) {
     { tone: 'neutral', title: `tx ${shortHex(tx.txid)}`, value: `${tx.vsize} vB`, full: tx.txid },
     [
       ...tx.outputs.map((o, n) => (envelope && n === envelope.vout
-        ? { tone: 'hidden', title: 'OP_RETURN · sobre zbtc', value: `0 BTC · ${envelope.hex.length / 2} B`, detail: 'monto y destino cifrados', amount: 0 }
+        ? { tone: 'hidden', title: 'OP_RETURN · envelope zbtc', value: `0 BTC · ${envelope.hex.length / 2} B`, detail: 'monto y destino cifrados', amount: 0 }
         : { tone, title: addressOwner(detail, 'out', o.address) ?? `salida ${n + 1}`, value: btc(o.btc), detail: shortAddr(o.address), full: o.address, amount: o.btc })),
       ...(tx.kind === 'coinbase' ? [] : [{ tone: 'neutral', title: 'comisión de red', value: btc(fee), detail: 'para el minero', amount: fee }]),
     ]);
@@ -1199,7 +1199,7 @@ function renderExplorerTx(detail) {
     ...tx.inputs.map((i, n) => kv(String(n + 1), i.address ? `${btc(i.btc)}  ${i.address}` : 'coinbase (moneda nueva)', addressOwner(detail, 'in', i.address))),
     th('salidas'),
     ...tx.outputs.map((o, n) => kv(String(n + 1), envelope && n === envelope.vout ? `${btc(o.btc)}  OP_RETURN · ${o.data.length / 2} bytes` : `${btc(o.btc)}  ${o.address ?? o.type}`,
-      envelope && n === envelope.vout ? 'sobre zbtc cifrado' : addressOwner(detail, 'out', o.address))),
+      envelope && n === envelope.vout ? 'envelope zbtc cifrado' : addressOwner(detail, 'out', o.address))),
   ];
 
   let innerArgs = null;
@@ -1218,7 +1218,7 @@ function renderExplorerTx(detail) {
       person && !opened ? loading(`probando la clave de ${person}…`) : null,
       person && opened ? comment(opened.length ? `la clave de ${person} abre ${opened.length === 1 ? 'una nota' : `${opened.length} notas`}; la otra sigue cerrada` : `la clave de ${person} no abre ninguna nota`) : null,
       HOSTS.inner,
-      h('div', { className: 'tl' }, tlink('→ debug: ver los 572 bytes del sobre', () => {
+      h('div', { className: 'tl' }, tlink('→ debug: ver los 572 bytes del envelope', () => {
         S.debug.txid = tx.txid;
         showTab('debug');
       })));
@@ -1296,7 +1296,7 @@ async function loadDebug() {
   if (!S.debug.txid && entries.length) S.debug.txid = entries[entries.length - 1].txid;
   const txid = S.debug.txid;
   if (!txid || S.explorer.txs.has(txid)) return;
-  const r = await call(`debug: decodificar el sobre ${shortHex(txid)}`, 'tx', { txid }, { quiet: true });
+  const r = await call(`debug: decodificar el envelope ${shortHex(txid)}`, 'tx', { txid }, { quiet: true });
   S.explorer.txs.set(txid, r.ok ? r.result : { error: r.error });
 }
 
@@ -1394,14 +1394,14 @@ function renderDebug() {
     })));
     const detail = S.explorer.txs.get(S.debug.txid);
     const entry = entries.find((e) => e.txid === S.debug.txid);
-    if (!detail) parts.push(loading('decodificando el sobre…'));
+    if (!detail) parts.push(loading('decodificando el envelope…'));
     else if (detail.error) parts.push(h('div', { className: 'tl tok-red', textContent: `error: ${detail.error}` }));
     else {
       if (entry?.checks) {
         parts.push(th('búsqueda de fugas', true), comment(`¿aparecen en claro en los bytes públicos? (monto enviado: ${entry.amount})`),
           ...entry.checks.map((ch) => kv(LEAK_LABELS[ch.label] ?? ch.label, ch.inClear ? ['sí: fuga', 'red'] : ['no', 'green'])));
       }
-      parts.push(th('bytes del sobre', true), bytesView(detail.envelope));
+      parts.push(th('bytes del envelope', true), bytesView(detail.envelope));
       const raw = h('details', {}, h('summary', { className: 'tc', textContent: `# json crudo: bitcoin-cli getrawtransaction ${shortHex(S.debug.txid)} 2` }), h('pre', { className: 'tpre' }, highlight(detail.json, true)));
       parts.push(th('json', true), raw);
     }
