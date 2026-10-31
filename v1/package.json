@@ -11,7 +11,8 @@
     "test:e2e": "vitest run test/e2e",
     "zbtc": "tsx src/cli.ts",
     "demo": "bash scripts/demo.sh",
-    "ui": "tsx ui/server.ts"
+    "ui": "tsx ui/server.ts",
+    "test:ui": "playwright test"
   },
   "dependencies": {
     "@noble/ciphers": "2.4.0",
@@ -22,6 +23,7 @@
     "snarkjs": "0.7.6"
   },
   "devDependencies": {
+    "@playwright/test": "1.59.1",
     "@types/node": "24.19.2",
     "tsx": "4.23.15",
     "typescript": "5.9.3",
