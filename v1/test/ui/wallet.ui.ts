@@ -152,6 +152,15 @@ test('debug shows the envelope and finds no leak', async () => {
   await expect(debug).toContainText('replay: 1 aceptadas · 0 rechazadas');
 });
 
+test('picking the shown transaction in debug brings its envelope into view', async () => {
+  const debug = page.locator('#tab-debug');
+  // The only transfer is already picked and decoded, so the click changes no data.
+  await debug.locator('.tbtn[aria-pressed="true"]').click();
+  const section = debug.locator('#debug-tx');
+  await expect(section).toHaveClass(/flash/);
+  await expect(section.getByText('búsqueda de fugas')).toBeInViewport();
+});
+
 test('receive shows a shielded and a transparent address', async () => {
   await page.getByRole('button', { name: 'Recibir', exact: true }).click();
   // A shielded address is "zbtcrt" followed by the hex of the owner and encryption keys.

@@ -1285,28 +1285,46 @@ function renderDebug() {
   else {
     parts.push(h('div', { className: 'tl' }, tok('key', 'tx'), tok('punct', ': '), ...entries.slice().reverse().flatMap((e) => {
       const b = h('button', { type: 'button', className: 'tbtn', textContent: `${shortHex(e.txid)} (${e.amount} → ${e.to})`, attrs: { 'aria-pressed': String(e.txid === S.debug.txid) } });
-      b.onclick = () => {
+      b.onclick = async () => {
         S.debug.txid = e.txid;
-        reloadPanel();
+        // Reveal after the last redraw: an earlier one would lose the flash when the section is rebuilt.
+        await reloadPanel();
+        revealTxDetail();
       };
       return [b, ' '];
     })));
     const detail = S.explorer.txs.get(S.debug.txid);
     const entry = entries.find((e) => e.txid === S.debug.txid);
-    if (!detail) parts.push(loading('decodificando el sobre…'));
-    else if (detail.error) parts.push(h('div', { className: 'tl tok-red', textContent: `error: ${detail.error}` }));
+    const section = [];
+    if (!detail) section.push(loading('decodificando el sobre…'));
+    else if (detail.error) section.push(h('div', { className: 'tl tok-red', textContent: `error: ${detail.error}` }));
     else {
       if (entry?.checks) {
-        parts.push(th('búsqueda de fugas', true), comment(`¿aparecen en claro en los bytes públicos? (monto enviado: ${entry.amount})`),
+        section.push(th('búsqueda de fugas', true), comment(`¿aparecen en claro en los bytes públicos? (monto enviado: ${entry.amount})`),
           ...entry.checks.map((ch) => kv(LEAK_LABELS[ch.label] ?? ch.label, ch.inClear ? ['sí: fuga', 'red'] : ['no', 'green'])));
       }
-      parts.push(th('bytes del sobre', true), bytesView(detail.envelope));
+      section.push(th('bytes del sobre', true), bytesView(detail.envelope));
       const raw = h('details', {}, h('summary', { className: 'tc', textContent: `# json crudo: bitcoin-cli getrawtransaction ${shortHex(S.debug.txid)} 2` }), h('pre', { className: 'tpre' }, highlight(detail.json, true)));
-      parts.push(th('json', true), raw);
+      section.push(th('json', true), raw);
     }
+    parts.push(h('div', { id: 'debug-tx', className: 'tsection' }, ...section));
   }
   parts.push(th('peligro'), resetZone());
   body.replaceChildren(doc(...parts));
+}
+
+/**
+ * Scrolls the picked transaction's envelope into view and flashes it. Picking the transaction
+ * that is already shown changes no data, so without this the click would look dead.
+ */
+function revealTxDetail() {
+  const el = document.getElementById('debug-tx');
+  if (!el) return;
+  const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  el.scrollIntoView({ behavior: still ? 'auto' : 'smooth', block: 'start' });
+  el.classList.remove('flash');
+  void el.offsetWidth; // restart the animation on repeated clicks
+  el.classList.add('flash');
 }
 
 // ---- Toast ----
