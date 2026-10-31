@@ -10,7 +10,8 @@
     "test:unit": "vitest run test/unit test/circuit",
     "test:e2e": "vitest run test/e2e",
     "zbtc": "tsx src/cli.ts",
-    "demo": "bash scripts/demo.sh"
+    "demo": "bash scripts/demo.sh",
+    "ui": "tsx ui/server.ts"
   },
   "dependencies": {
     "@noble/ciphers": "2.4.0",
