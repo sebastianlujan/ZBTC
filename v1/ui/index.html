@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Wallet ZBTC de prueba: transferencias protegidas sobre Bitcoin regtest, con terminal, explorer y debug.">
+<meta name="theme-color" content="#0a0a0a">
+<title>ZBTC Wallet · regtest</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<a class="skip" href="#main">Saltar a la wallet</a>
+
+<header class="nav">
+  <div class="nav-left">
+    <a class="brand" href="#main">
+      <span class="logo" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M3 3.5h10L3.5 12.5h9.5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+      <span>ZBTC</span>
+    </a>
+    <span class="slash" aria-hidden="true">/</span>
+    <div class="accounts" id="accounts" role="radiogroup" aria-label="Cuenta"></div>
+    <span class="net">regtest</span>
+  </div>
+  <div class="nav-right">
+    <span class="chain-pill" id="chain-pill"></span>
+    <button class="btn btn-sm" id="mine" type="button">Minar bloque</button>
+    <button class="btn btn-sm panel-toggle" id="panel-toggle" type="button" aria-controls="panel" aria-expanded="false">terminal</button>
+  </div>
+</header>
+
+<div class="shell">
+  <main id="main"></main>
+
+  <aside class="panel" id="panel" aria-label="Panel de desarrollo">
+    <div class="panel-bar">
+      <div class="tabs" role="tablist" aria-label="Vistas del panel">
+        <button type="button" role="tab" data-tab="terminal" aria-controls="tab-terminal">terminal</button>
+        <span class="pipe" aria-hidden="true">|</span>
+        <button type="button" role="tab" data-tab="explorer" aria-controls="tab-explorer">explorer</button>
+        <span class="pipe" aria-hidden="true">|</span>
+        <button type="button" role="tab" data-tab="debug" aria-controls="tab-debug">debug</button>
+      </div>
+      <div class="panel-actions">
+        <button type="button" id="panel-max" title="Pantalla completa (Esc para volver)">maximizar</button>
+        <button type="button" id="panel-close">ocultar</button>
+      </div>
+    </div>
+    <div class="panel-body" id="tab-terminal" role="tabpanel" aria-label="terminal">
+      <p class="term-empty"># cada acción muestra aquí los comandos que ejecuta, con una línea # que explica por qué</p>
+    </div>
+    <div class="panel-body" id="tab-explorer" role="tabpanel" aria-label="explorer" hidden></div>
+    <div class="panel-body" id="tab-debug" role="tabpanel" aria-label="debug" hidden></div>
+  </aside>
+</div>
+
+<dialog class="sheet" id="send-dialog" aria-label="Enviar"></dialog>
+<dialog class="sheet" id="receive-dialog" aria-label="Recibir"></dialog>
+<div id="toast-slot"></div>
+
+<!-- Apache ECharts 5.6.0, pinned; the hash matches the npm tarball's dist/echarts.min.js. -->
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.6.0/dist/echarts.min.js" integrity="sha384-pPi0zxBAoDu6+JXW/C68UZLvBUUtU+7zonhif43rqj7pxsGyqyqzcian2Rj37Rss" crossorigin="anonymous"></script>
+<script src="/app.js"></script>
+</body>
+</html>
