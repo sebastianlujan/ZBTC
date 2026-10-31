@@ -339,8 +339,8 @@ function mine() {
 function renderNav() {
   const c = S.chain;
   $('accounts').replaceChildren(...PEOPLE.map((p) => {
-    const b = h('button', { type: 'button', attrs: { role: 'radio', 'aria-checked': String(p === S.account) } },
-      h('span', { className: `avatar ${p}`, textContent: cap(p)[0] }), cap(p));
+    const b = h('button', { type: 'button', attrs: { role: 'radio', 'aria-checked': String(p === S.account), 'aria-label': cap(p) } },
+      h('span', { className: `avatar ${p}`, textContent: cap(p)[0] }), h('span', { className: 'label', textContent: cap(p) }));
     b.onclick = () => {
       S.account = p;
       renderAll();
@@ -352,11 +352,13 @@ function renderNav() {
   pill.replaceChildren(h('span', { className: 'dot' }), h('span', { className: 'label', textContent: c ? `bloque ${c.height}` : 'sin red' }));
   const waiting = c?.mempool.length ?? 0;
   $('mine').disabled = Boolean(S.busy) || !c;
-  $('mine').replaceChildren(icon('cube'), waiting ? `Minar bloque · ${waiting}` : 'Minar bloque');
+  $('mine').replaceChildren(icon('cube'), h('span', { className: 'label', textContent: waiting ? `Minar bloque · ${waiting}` : 'Minar bloque' }));
+  $('mine').setAttribute('aria-label', 'Minar bloque');
   const toggle = $('panel-toggle');
   toggle.setAttribute('aria-expanded', String(S.panelOpen));
+  toggle.setAttribute('aria-label', 'terminal');
   toggle.classList.toggle('is-busy', Boolean(S.busy));
-  toggle.replaceChildren(icon('terminal'), 'terminal', h('span', { className: 'count', textContent: String(S.commands) }), h('span', { className: 'live' }));
+  toggle.replaceChildren(icon('terminal'), h('span', { className: 'label', textContent: 'terminal' }), h('span', { className: 'count', textContent: String(S.commands) }), h('span', { className: 'live' }));
 }
 
 // ---- Wallet ----
@@ -408,8 +410,15 @@ function activityRows(person) {
   });
 }
 
+/** The wallet app's own header: who is using this phone, and the network it follows. */
+function appHead() {
+  return h('div', { className: 'app-head' },
+    h('span', { className: 'who' }, h('span', { className: `avatar lg ${S.account}`, textContent: cap(S.account)[0] }), cap(S.account)),
+    h('span', { className: 'chain-pill up' }, h('span', { className: 'dot' }), h('span', { textContent: `regtest · ${S.chain.height}` })));
+}
+
 function renderWallet() {
-  const main = $('main');
+  const main = $('app');
   if (!S.loaded) {
     return main.replaceChildren(h('div', { className: 'wallet' }, h('div', { className: 'skeleton-line tall' }), h('div', { className: 'skeleton-line' })));
   }
@@ -426,8 +435,9 @@ function renderWallet() {
   const transfersMade = S.chain.activity.some((e) => e.kind !== 'genesis');
 
   main.replaceChildren(h('div', { className: 'wallet' },
+    appHead(),
     h('section', { className: 'hero' },
-      h('div', { className: 'hero-label' }, icon('shield'), `Saldo protegido · ${cap(S.account)}`),
+      h('div', { className: 'hero-label' }, icon('shield'), 'Saldo protegido'),
       h('div', { className: 'balance' },
         h('span', { className: 'amount', textContent: String(after) }),
         h('span', { className: 'unit', textContent: 'ZBTC' }),
@@ -452,12 +462,44 @@ function renderWallet() {
       transfersMade ? null : h('p', { className: 'empty', textContent: 'Para empezar: enviar ZBTC a la otra cuenta en modo privado y BTC en modo público, y comparar las dos transacciones en el explorer del panel.' }))));
 }
 
-// ---- Send dialog ----
+// ---- Bottom sheets inside the phone ----
+
+let sheetReturnFocus = null;
+
+/** The content box of the open sheet of this kind, creating the sheet if it is not open. */
+function sheetContent(kind, label) {
+  const layer = $('sheet-layer');
+  let sheet = layer.querySelector('.sheet');
+  if (!sheet || sheet.dataset.kind !== kind) {
+    sheetReturnFocus ??= document.activeElement;
+    const backdrop = h('div', { className: 'sheet-backdrop' });
+    backdrop.onclick = closeSheet;
+    sheet = h('div', { className: 'sheet', attrs: { role: 'dialog', 'aria-modal': 'true', 'aria-label': label, 'data-kind': kind } },
+      h('div', { className: 'grabber', attrs: { 'aria-hidden': 'true' } }), h('div', { className: 'sheet-content' }));
+    layer.replaceChildren(backdrop, sheet);
+    layer.hidden = false;
+  }
+  return sheet.querySelector('.sheet-content');
+}
+
+function closeSheet() {
+  // A send in flight cannot be cancelled, so its progress stays on screen.
+  if (S.send?.phase === 'sending') return;
+  S.send = null;
+  S.receive = null;
+  const layer = $('sheet-layer');
+  layer.hidden = true;
+  layer.replaceChildren();
+  sheetReturnFocus?.focus?.();
+  sheetReturnFocus = null;
+}
+
+// ---- Send ----
 
 function openSend() {
   S.send = { to: other(S.account), mode: 'private', amounts: { private: '17', public: '0,3' }, phase: 'form', steps: [], entry: null, error: null };
   renderSend();
-  $('send-dialog').showModal();
+  $('sheet-layer').querySelector('.sheet input')?.focus();
 }
 
 function sendCheck() {
@@ -486,11 +528,11 @@ function previewRows(mode) {
 }
 
 function renderSend() {
-  const d = $('send-dialog');
   const s = S.send;
   if (!s) return;
+  const d = sheetContent('send', 'Enviar');
   const close = h('button', { type: 'button', className: 'icon-btn', attrs: { 'aria-label': 'Cerrar' }, disabled: s.phase === 'sending' }, icon('x'));
-  close.onclick = () => d.close();
+  close.onclick = () => closeSheet();
   const head = h('div', { className: 'sheet-head' }, h('h2', { textContent: `Enviar desde ${cap(S.account)}` }), close);
 
   if (s.phase === 'sending') {
@@ -502,11 +544,11 @@ function renderSend() {
     const ok = s.phase === 'done';
     const view = h('button', { type: 'button', className: 'btn', textContent: 'Ver en el explorer' });
     view.onclick = () => {
-      d.close();
+      closeSheet();
       openExplorer('tx', s.entry.txid);
     };
     const done = h('button', { type: 'button', className: 'btn btn-primary', textContent: ok ? 'Listo' : 'Cerrar' });
-    done.onclick = () => d.close();
+    done.onclick = () => closeSheet();
     return d.replaceChildren(head,
       h('div', { className: 'sheet-body' }, h('div', { className: 'result' },
         h('span', { className: `big-icon${ok ? '' : ' bad'}` }, icon(ok ? 'check' : 'x')),
@@ -538,7 +580,7 @@ function renderSend() {
   const submit = h('button', { type: 'button', className: 'btn btn-primary', id: 'send-submit' });
   submit.onclick = submitSend;
   const cancel = h('button', { type: 'button', className: 'btn', textContent: 'Cancelar' });
-  cancel.onclick = () => d.close();
+  cancel.onclick = () => closeSheet();
 
   d.replaceChildren(head,
     h('div', { className: 'sheet-body' },
@@ -600,12 +642,11 @@ async function submitSend() {
   renderSend();
 }
 
-// ---- Receive dialog ----
+// ---- Receive ----
 
 async function openReceive() {
   S.receive = { mode: 'private', data: null, copied: null };
   renderReceive();
-  $('receive-dialog').showModal();
   const person = S.account;
   const r = await call(`direcciones de ${person}`, 'address', { person }, { quiet: true });
   if (S.receive && r.ok && r.result.person === S.account) {
@@ -615,11 +656,11 @@ async function openReceive() {
 }
 
 function renderReceive() {
-  const d = $('receive-dialog');
   const s = S.receive;
   if (!s) return;
+  const d = sheetContent('receive', 'Recibir');
   const close = h('button', { type: 'button', className: 'icon-btn', attrs: { 'aria-label': 'Cerrar' } }, icon('x'));
-  close.onclick = () => d.close();
+  close.onclick = () => closeSheet();
   const tab = (mode, label, iconName) => {
     const b = h('button', { type: 'button', attrs: { role: 'radio', 'aria-checked': String(s.mode === mode) } }, icon(iconName), label);
     b.onclick = () => {
@@ -1272,7 +1313,7 @@ function renderAll() {
   renderNav();
   renderWallet();
   renderPanelFrame();
-  if (S.send && $('send-dialog').open) updateSendIfForm();
+  if (S.send) updateSendIfForm();
   renderExplorer();
   renderDebug();
 }
@@ -1296,21 +1337,33 @@ $('panel-max').onclick = () => {
 };
 for (const b of document.querySelectorAll('#panel .tabs [role="tab"]')) b.onclick = () => showTab(b.dataset.tab);
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && S.panelMax && !document.querySelector('dialog[open]')) {
+  if (e.key !== 'Escape') return;
+  if (!$('sheet-layer').hidden) closeSheet();
+  else if (S.panelMax) {
     S.panelMax = false;
     renderPanelFrame();
   }
 });
-// A send in flight cannot be cancelled, so Esc must not hide its progress.
-$('send-dialog').addEventListener('cancel', (e) => {
-  if (S.send?.phase === 'sending') e.preventDefault();
-});
-$('send-dialog').addEventListener('close', () => {
-  if (S.send?.phase !== 'sending') S.send = null;
-});
-$('receive-dialog').addEventListener('close', () => {
-  S.receive = null;
-});
+
+// ---- The phone: clock in the status bar, and a frame scaled to fit the stage ----
+
+const DEVICE_WIDTH = 428;
+const DEVICE_HEIGHT = 868;
+const STAGE_PADDING = 24;
+
+function tickClock() {
+  $('clock').textContent = new Date().toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' });
+}
+
+function fitPhone() {
+  const stage = $('stage');
+  const scale = Math.min(1, (stage.clientHeight - 2 * STAGE_PADDING) / DEVICE_HEIGHT, (stage.clientWidth - 2 * STAGE_PADDING) / DEVICE_WIDTH);
+  $('phone-box').style.setProperty('--scale', Math.max(scale, 0.3).toFixed(3));
+}
+
+tickClock();
+setInterval(tickClock, 15_000);
+new ResizeObserver(fitPhone).observe($('stage'));
 
 renderAll();
 refresh().then(() => {
