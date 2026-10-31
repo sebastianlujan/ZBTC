@@ -1007,10 +1007,16 @@ const resizer = new ResizeObserver((entries) => {
     const key = entry.target.dataset.chart;
     const last = drawn.get(key);
     if (!last || entry.contentRect.width === 0) continue;
-    if (last.room !== labelRoom(entry.contentRect.width)) drawSankey(key, last.model);
+    // While the panel is dragged, only stretch; the layout is redone once on release.
+    if (!S.resizingPanel && last.room !== labelRoom(entry.contentRect.width)) drawSankey(key, last.model);
     else charts.get(key)?.resize();
   }
 });
+
+/** Re-lays out every drawn chart for its current width; unchanged ones only resize. */
+function redrawCharts() {
+  for (const [key, last] of drawn) drawSankey(key, last.model);
+}
 
 /** Draws or updates one Sankey; call it after its host is in the page, so the host has a size. */
 function drawSankey(key, model) {
@@ -1344,6 +1350,85 @@ document.addEventListener('keydown', (e) => {
     renderPanelFrame();
   }
 });
+
+// ---- Panel width: drag its left edge, on the x axis only ----
+
+const PANEL_MIN_PX = 320;
+/** The phone's stage keeps at least this much room next to the panel. */
+const STAGE_MIN_PX = 360;
+const PANEL_KEY_STEP_PX = 24;
+const PANEL_WIDTH_KEY = 'zbtc.panelWidth';
+
+function setPanelWidth(px, save = false) {
+  const max = Math.max(PANEL_MIN_PX, window.innerWidth - STAGE_MIN_PX);
+  const width = Math.round(Math.min(max, Math.max(PANEL_MIN_PX, px)));
+  $('panel').style.setProperty('--panel-w', `${width}px`);
+  const handle = $('panel-resizer');
+  handle.setAttribute('aria-valuemin', String(PANEL_MIN_PX));
+  handle.setAttribute('aria-valuemax', String(max));
+  handle.setAttribute('aria-valuenow', String(width));
+  if (!save) return;
+  try {
+    localStorage.setItem(PANEL_WIDTH_KEY, String(width));
+  } catch {
+    // Storage can be unavailable (private mode); the width just is not remembered.
+  }
+}
+
+function resetPanelWidth() {
+  $('panel').style.removeProperty('--panel-w');
+  $('panel-resizer').removeAttribute('aria-valuenow');
+  try {
+    localStorage.removeItem(PANEL_WIDTH_KEY);
+  } catch {
+    // Nothing remembered to forget.
+  }
+  redrawCharts();
+}
+
+const panelWidth = () => $('panel').getBoundingClientRect().width;
+
+$('panel-resizer').addEventListener('pointerdown', (e) => {
+  if (e.button !== 0) return;
+  e.preventDefault();
+  const handle = e.currentTarget;
+  const startX = e.clientX;
+  const startWidth = panelWidth();
+  handle.setPointerCapture(e.pointerId);
+  S.resizingPanel = true;
+  document.body.classList.add('resizing');
+  // The panel sits on the right, so moving the pointer left widens it.
+  const move = (ev) => setPanelWidth(startWidth + (startX - ev.clientX));
+  const end = () => {
+    handle.removeEventListener('pointermove', move);
+    handle.removeEventListener('pointerup', end);
+    handle.removeEventListener('pointercancel', end);
+    S.resizingPanel = false;
+    document.body.classList.remove('resizing');
+    setPanelWidth(panelWidth(), true);
+    redrawCharts();
+  };
+  handle.addEventListener('pointermove', move);
+  handle.addEventListener('pointerup', end);
+  handle.addEventListener('pointercancel', end);
+});
+$('panel-resizer').addEventListener('dblclick', resetPanelWidth);
+$('panel-resizer').addEventListener('keydown', (e) => {
+  const step = { ArrowLeft: PANEL_KEY_STEP_PX, ArrowRight: -PANEL_KEY_STEP_PX }[e.key];
+  if (!step) return;
+  e.preventDefault();
+  setPanelWidth(panelWidth() + step, true);
+});
+// A remembered width still has to fit the current window.
+window.addEventListener('resize', () => {
+  if ($('panel').style.getPropertyValue('--panel-w')) setPanelWidth(panelWidth());
+});
+try {
+  const saved = Number(localStorage.getItem(PANEL_WIDTH_KEY));
+  if (saved) setPanelWidth(saved);
+} catch {
+  // No remembered width; the panel keeps its default.
+}
 
 // ---- The phone: clock in the status bar, and a frame scaled to fit the stage ----
 
