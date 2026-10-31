@@ -282,6 +282,9 @@ body.resizing, body.resizing * { cursor: col-resize !important; user-select: non
 .tdoc { padding: 4px 14px 0; display: grid; gap: 2px; }
 .tdoc .tl { white-space: pre-wrap; word-break: break-all; min-height: 1.55em; }
 .tdoc .th { margin-top: 14px; color: var(--text); font-weight: 600; }
+.tdoc .tsection { display: grid; gap: 2px; scroll-margin-top: 8px; border-radius: 4px; }
+.tdoc .tsection.flash { animation: flash 1.2s ease-out; }
+@keyframes flash { from { background: var(--term-line); } }
 .tdoc .th::before { content: "## "; color: var(--term-dim); font-weight: 400; }
 .tdoc .th.sub::before { content: "### "; }
 .tdoc .gap { height: 8px; }
