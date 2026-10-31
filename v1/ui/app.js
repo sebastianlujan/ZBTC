@@ -392,11 +392,11 @@ function activityRows(person) {
       amount = `+${zbtc(e.amount)}`;
       sub = 'génesis de la demo';
     } else if (e.kind === 'shielded') {
-      title = outgoing ? `Enviado a ${cap(e.to)}` : 'Recibido';
+      title = outgoing ? `Enviado a ${toLabel(e)}` : 'Recibido';
       amount = outgoing ? `−${zbtc(e.amount)}` : `+${zbtc(sum((e.opened ?? []).map((o) => o.units)))}`;
       sub = outgoing ? `privado · ${timeAgo(e.time)}` : `privado · remitente oculto · ${timeAgo(e.time)}`;
     } else {
-      title = outgoing ? `Enviado a ${cap(e.to)}` : 'Recibido';
+      title = outgoing ? `Enviado a ${toLabel(e)}` : 'Recibido';
       amount = `${outgoing ? '−' : '+'}${btc(Number(e.amount))}`;
       sub = outgoing ? `público · ${timeAgo(e.time)}` : `público · de ${shortAddr(e.senderAddresses?.[0])} · ${timeAgo(e.time)}`;
     }
@@ -496,10 +496,53 @@ function closeSheet() {
 
 // ---- Send ----
 
+const SHIELDED_ADDRESS = /^zbtcrt[0-9a-f]{128}$/;
+// Regtest Bitcoin addresses: bech32 (bcrt1…) or base58 (m…, n…, 2…).
+const BTC_ADDRESS = /^(bcrt1[02-9ac-hj-np-z]{8,87}|[mn2][1-9A-HJ-NP-Za-km-z]{25,34})$/;
+
+/**
+ * What the text in "Para" names: a demo account by name, a shielded or a Bitcoin address, or
+ * nothing valid. A pasted shielded address of a demo account also carries that account as `owner`.
+ */
+function recipientOf(text) {
+  const t = text.trim();
+  const person = PEOPLE.find((p) => p === t.toLowerCase());
+  if (person) return { person, label: cap(person) };
+  if (SHIELDED_ADDRESS.test(t)) {
+    const owner = S.chain?.wallets.find((w) => w.address === t)?.name ?? null;
+    return { address: t, owner, mode: 'private', label: owner ? cap(owner) : shortAddr(t) };
+  }
+  if (BTC_ADDRESS.test(t)) return { address: t, owner: null, mode: 'public', label: shortAddr(t) };
+  return null;
+}
+
+/** The demo account a recipient is, whether chosen as a contact or recognized from its address. */
+const recipientAccount = (r) => r?.person ?? r?.owner ?? null;
+
+/** Who a transfer went to, for lists: the account's name, or the start and end of the address. */
+const toLabel = (e) => (e.to ? cap(e.to) : shortAddr(e.toAddress));
+
 function openSend() {
-  S.send = { to: other(S.account), mode: 'private', amounts: { private: '17', public: '0,3' }, phase: 'form', steps: [], entry: null, error: null };
+  S.send = { toText: cap(other(S.account)), mode: 'private', switched: false, notice: null, amounts: { private: '17', public: '0,3' }, phase: 'form', steps: [], entry: null, error: null };
   renderSend();
-  $('sheet-layer').querySelector('.sheet input')?.focus();
+  $('send-amount')?.querySelector('input')?.focus();
+}
+
+function recipientCheck() {
+  const s = S.send;
+  if (!s.toText.trim()) return { ok: false, hint: 'Escribir o pegar una dirección, o elegir un contacto.' };
+  const r = recipientOf(s.toText);
+  if (!r) return { ok: false, bad: true, hint: 'No es una dirección válida: una protegida empieza con zbtcrt y una de Bitcoin con bcrt1.' };
+  if (recipientAccount(r) === S.account) return { ok: false, bad: true, hint: 'Es tu propia cuenta.' };
+  if (r.address && r.mode !== s.mode) {
+    return { ok: false, bad: true, hint: r.mode === 'private' ? 'Es una dirección protegida: usar el modo Privado.' : 'Es una dirección Bitcoin: usar el modo Público.' };
+  }
+  let hint;
+  if (r.person) hint = s.mode === 'private' ? `A la dirección protegida de ${r.label}.` : `A una dirección Bitcoin nueva de ${r.label}.`;
+  else if (r.owner) hint = `Dirección protegida de ${r.label}.`;
+  else hint = s.mode === 'private' ? 'Dirección protegida, fuera de la demo.' : 'Dirección Bitcoin.';
+  if (s.switched) hint += ` Modo cambiado a ${s.mode === 'private' ? 'Privado' : 'Público'} según la dirección.`;
+  return { ok: true, recipient: r, hint };
 }
 
 function sendCheck() {
@@ -521,10 +564,21 @@ function sendCheck() {
 
 /** What the network will see, row by row, for the chosen mode. */
 function previewRows(mode) {
-  const to = cap(S.send.to);
   return mode === 'private'
     ? [['Quién envía', 'amber', 'Vinculado: la comisión sale de tu fee wallet'], ['Quién recibe', 'green', 'Oculto'], ['Monto', 'green', 'Oculto']]
-    : [['Quién envía', 'red', 'Visible: tu dirección'], ['Quién recibe', 'red', `Visible: la dirección de ${to}`], ['Monto', 'red', 'Visible']];
+    : [['Quién envía', 'red', 'Visible: tu dirección'], ['Quién recibe', 'red', recipientPreview()], ['Monto', 'red', 'Visible']];
+}
+
+function recipientPreview() {
+  const r = recipientOf(S.send.toText);
+  return r?.person ? `Visible: la dirección de ${r.label}` : 'Visible: esa dirección';
+}
+
+/** Puts the caret back at the end of "Para" after the form is rebuilt. */
+function focusRecipient() {
+  const input = $('send-to');
+  input?.focus();
+  input?.setSelectionRange(input.value.length, input.value.length);
 }
 
 function renderSend() {
@@ -562,15 +616,46 @@ function renderSend() {
       h('span', { className: 'mode-title' }, icon(iconName), title), h('span', { className: 'mode-sub', textContent: sub }));
     b.onclick = () => {
       s.mode = mode;
+      s.switched = false;
       renderSend();
     };
     return b;
   };
-  const to = h('select', {}, ...PEOPLE.filter((p) => p !== S.account).map((p) => h('option', { value: p, textContent: cap(p) })));
-  to.value = s.to;
+  const to = h('input', { id: 'send-to', value: s.toText, placeholder: 'Dirección o contacto', autocomplete: 'off', spellcheck: false, attrs: { 'aria-label': 'Para' } });
   to.addEventListener('input', () => {
-    s.to = to.value;
-    renderSend();
+    s.toText = to.value;
+    s.notice = null;
+    const r = recipientOf(s.toText);
+    // A pasted address decides the mode: shielded addresses go private, Bitcoin ones public.
+    if (r?.address && r.mode !== s.mode) {
+      s.mode = r.mode;
+      s.switched = true;
+      renderSend();
+      focusRecipient();
+      return;
+    }
+    updateSend();
+  });
+  const paste = h('button', { type: 'button', className: 'btn btn-sm', textContent: 'Pegar' });
+  paste.onclick = async () => {
+    try {
+      to.value = (await navigator.clipboard.readText()).trim();
+      to.dispatchEvent(new Event('input'));
+    } catch {
+      s.notice = 'El navegador no dejó leer el portapapeles: pegar con Cmd+V o Ctrl+V.';
+      updateSend();
+    }
+  };
+  const contacts = PEOPLE.filter((p) => p !== S.account).map((p) => {
+    const b = h('button', { type: 'button', className: 'contact', attrs: { 'data-person': p, 'aria-pressed': String(recipientAccount(recipientOf(s.toText)) === p) } },
+      h('span', { className: `avatar ${p}`, textContent: cap(p)[0] }), cap(p));
+    b.onclick = () => {
+      s.toText = cap(p);
+      s.switched = false;
+      s.notice = null;
+      renderSend();
+    };
+    return b;
   });
   const amount = h('input', { value: s.amounts[s.mode], inputMode: s.mode === 'private' ? 'numeric' : 'decimal', autocomplete: 'off', attrs: { 'aria-label': 'Monto' } });
   amount.addEventListener('input', () => {
@@ -584,7 +669,11 @@ function renderSend() {
 
   d.replaceChildren(head,
     h('div', { className: 'sheet-body' },
-      h('div', { className: 'field' }, h('label', { textContent: 'Para' }), h('div', { className: 'input-wrap' }, to)),
+      h('div', { className: 'field' },
+        h('label', { textContent: 'Para', htmlFor: 'send-to' }),
+        h('div', { className: 'input-wrap', id: 'send-to-wrap' }, to, paste),
+        h('div', { className: 'contacts', attrs: { role: 'group', 'aria-label': 'Contactos' } }, ...contacts),
+        h('p', { className: 'field-hint', id: 'send-to-hint' })),
       h('div', { className: 'field' }, h('span', { className: 'label', textContent: 'Modo' }),
         h('div', { className: 'modes', attrs: { role: 'radiogroup', 'aria-label': 'Modo' } },
           modeButton('private', 'Privado', 'ZBTC protegido', 'shield'),
@@ -594,23 +683,32 @@ function renderSend() {
         h('p', { className: 'field-hint', id: 'send-hint' })),
       h('div', { className: 'preview' },
         h('div', { className: 'preview-head', textContent: 'Lo que verá cualquiera en la red' }),
-        ...previewRows(s.mode).map(([what, tone, text]) => h('div', { className: 'preview-row' }, h('span', { className: 'what', textContent: what }), h('span', { className: `tag ${tone}`, textContent: text })))),
+        ...previewRows(s.mode).map(([what, tone, text]) => h('div', { className: 'preview-row' }, h('span', { className: 'what', textContent: what }),
+          h('span', { className: `tag ${tone}`, textContent: text, attrs: what === 'Quién recibe' ? { 'data-preview': 'to' } : {} })))),
       h('div', { id: 'send-mine' })),
     h('div', { className: 'sheet-foot' }, cancel, submit));
   updateSend();
 }
 
-/** Updates hint, button and amount state without rebuilding the form, so the input keeps focus. */
+/** Updates hints, preview and button without rebuilding the form, so the inputs keep focus. */
 function updateSend() {
   const s = S.send;
   const r = sendCheck();
   const hint = $('send-hint');
   if (!hint) return;
+  const to = recipientCheck();
+  const toHint = $('send-to-hint');
+  toHint.textContent = s.notice ?? to.hint;
+  toHint.className = to.bad || s.notice ? 'field-hint bad' : 'field-hint';
+  $('send-to-wrap').classList.toggle('bad', Boolean(to.bad));
+  for (const b of document.querySelectorAll('.contact')) b.setAttribute('aria-pressed', String(recipientAccount(to.recipient) === b.dataset.person));
+  const preview = document.querySelector('[data-preview="to"]');
+  if (preview && s.mode === 'public') preview.textContent = recipientPreview();
   hint.textContent = r.hint;
   hint.className = r.bad ? 'field-hint bad' : 'field-hint';
   $('send-amount').classList.toggle('bad', Boolean(r.bad));
   const submit = $('send-submit');
-  submit.disabled = !r.ok || Boolean(S.busy);
+  submit.disabled = !r.ok || !to.ok || Boolean(S.busy);
   const value = s.mode === 'private' ? zbtc(s.amounts.private.trim() || '0') : `${s.amounts.public.trim() || '0'} BTC`;
   submit.textContent = `Enviar ${value} ${s.mode === 'private' ? 'en privado' : 'en público'}`;
   $('send-mine').replaceChildren(r.mine ? h('button', { type: 'button', className: 'btn btn-sm', textContent: 'Minar bloque ahora', onclick: async () => { await mine(); renderSend(); } }) : '');
@@ -618,15 +716,18 @@ function updateSend() {
 
 async function submitSend() {
   const s = S.send;
-  if (!sendCheck().ok) return;
+  const to = recipientCheck();
+  if (!sendCheck().ok || !to.ok) return;
   const from = S.account;
   const amount = s.mode === 'private' ? s.amounts.private.trim() : decimal(s.amounts.public);
+  const { person, address, label: toText } = to.recipient;
+  const target = person ? { to: person } : { toAddress: address };
   s.phase = 'sending';
   s.steps = [];
   renderSend();
   await busy('Enviando', async () => {
-    const label = s.mode === 'private' ? `enviar ${amount} ZBTC en privado: ${from} → ${s.to}` : `enviar ${amount} BTC en público: ${from} → ${s.to}`;
-    const r = await call(label, s.mode === 'private' ? 'shielded' : 'transparent', { from, to: s.to, amount }, progressHooks(s.steps, renderSend));
+    const label = s.mode === 'private' ? `enviar ${amount} ZBTC en privado: ${from} → ${toText}` : `enviar ${amount} BTC en público: ${from} → ${toText}`;
+    const r = await call(label, s.mode === 'private' ? 'shielded' : 'transparent', { from, ...target, amount }, progressHooks(s.steps, renderSend));
     if (r.ok) {
       s.phase = 'done';
       s.entry = r.result;
@@ -884,7 +985,7 @@ function addressOwner(detail, side, address) {
   const e = detail.entry;
   if (!e || !address) return null;
   if (side === 'in') return `fee wallet de ${cap(e.from)}`;
-  return e.kind === 'transparent' && address === e.recipientAddress ? `pago a ${cap(e.to)}` : `vuelto a ${cap(e.from)}`;
+  return e.kind === 'transparent' && address === e.recipientAddress ? `pago a ${toLabel(e)}` : `vuelto a ${cap(e.from)}`;
 }
 
 function outerModel(detail) {
@@ -1284,7 +1385,7 @@ function renderDebug() {
   if (!entries.length) parts.push(comment('todavía no hay transacciones protegidas'));
   else {
     parts.push(h('div', { className: 'tl' }, tok('key', 'tx'), tok('punct', ': '), ...entries.slice().reverse().flatMap((e) => {
-      const b = h('button', { type: 'button', className: 'tbtn', textContent: `${shortHex(e.txid)} (${e.amount} → ${e.to})`, attrs: { 'aria-pressed': String(e.txid === S.debug.txid) } });
+      const b = h('button', { type: 'button', className: 'tbtn', textContent: `${shortHex(e.txid)} (${e.amount} → ${e.to ?? shortAddr(e.toAddress)})`, attrs: { 'aria-pressed': String(e.txid === S.debug.txid) } });
       b.onclick = () => {
         S.debug.txid = e.txid;
         reloadPanel();

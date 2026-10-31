@@ -1,7 +1,10 @@
 // The demo wallet end to end, through the real page: clicks, wheel and typing are real
 // input, so an element covering a control fails the test (Playwright checks which element
 // receives each click). The tests share one network and run in order.
+import { execFileSync } from 'node:child_process';
+import path from 'node:path';
 import { expect, test, type Locator, type Page } from '@playwright/test';
+import { RPC_PORT, STATE_DIR } from './env.js';
 
 test.describe.configure({ mode: 'serial' });
 
@@ -21,6 +24,9 @@ const sheet = () => page.locator('#sheet-layer');
 const height = async () => Number((await page.locator('#chain-pill').textContent())?.match(/\d+/)?.[0]);
 const activityRow = (title: string) => page.locator('.row', { hasText: title }).first();
 const command = (line: string) => page.locator('.tcmd', { hasText: line });
+// Exact role queries: a label query would also match chart descriptions such as "nota para Alice".
+const recipientField = () => page.getByRole('textbox', { name: 'Para', exact: true });
+const amountField = () => page.getByRole('textbox', { name: 'Monto', exact: true });
 
 /** Waits until no action runs and no command is still streaming into the terminal. */
 async function settled(): Promise<void> {
@@ -31,12 +37,12 @@ async function settled(): Promise<void> {
 async function openSend(): Promise<Locator> {
   await page.getByRole('button', { name: 'Enviar', exact: true }).click();
   await expect(sheet()).toBeVisible();
-  return page.getByLabel('Monto');
+  return amountField();
 }
 
 /** Types into the amount field the way a person does: select all, then key by key. */
 async function typeAmount(text: string): Promise<void> {
-  const amount = page.getByLabel('Monto');
+  const amount = amountField();
   await amount.click();
   await amount.press('ControlOrMeta+a');
   await amount.pressSequentially(text);
@@ -160,6 +166,81 @@ test('receive shows a shielded and a transparent address', async () => {
   await expect(page.locator('.address code')).toHaveText(/^bcrt1/);
   await page.keyboard.press('Escape');
   await expect(sheet()).toBeHidden();
+});
+
+/** bitcoin-cli against the tests' own node. */
+function bitcoinCli(...args: string[]): string {
+  return execFileSync('bitcoin-cli', ['-regtest', `-datadir=${path.join(STATE_DIR, '.regtest')}`, `-rpcport=${RPC_PORT}`, ...args], { encoding: 'utf8' }).trim();
+}
+
+async function shieldedAddressOf(name: 'Alice' | 'Bob'): Promise<string> {
+  await showAccount(name);
+  await page.getByRole('button', { name: 'Recibir', exact: true }).click();
+  const address = await page.locator('.address code').textContent();
+  await page.keyboard.press('Escape');
+  await expect(sheet()).toBeHidden();
+  return address ?? '';
+}
+
+test('pastes a shielded address with the paste button, and its owner receives', async () => {
+  const alice = await shieldedAddressOf('Alice');
+  await showAccount('Bob');
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write'], { origin: new URL(page.url()).origin });
+  // A string, so it runs in the page: this tsconfig has no DOM types for `navigator`.
+  await page.evaluate(`navigator.clipboard.writeText(${JSON.stringify(alice)})`);
+  await openSend();
+  await recipientField().fill('');
+  await page.getByRole('button', { name: 'Pegar' }).click();
+  await expect(recipientField()).toHaveValue(alice);
+  // The pasted address is Alice's, so the contact lights up as well.
+  await expect(page.locator('.contact[data-person="alice"]')).toHaveAttribute('aria-pressed', 'true');
+  await typeAmount('4');
+  await page.locator('#send-submit').click();
+  await expect(page.locator('.result h3')).toHaveText('Enviado');
+  await expect(command(`zbtc send bob ${alice} 4`)).toHaveCount(1);
+  await page.getByRole('button', { name: 'Listo' }).click();
+  await settled();
+  await expect(activityRow('Enviado a Alice')).toContainText('−4 ZBTC');
+  await page.locator('#mine').click();
+  await settled();
+  await showAccount('Alice');
+  await expect(page.locator('.row', { hasText: '+4 ZBTC' })).toContainText('Recibido');
+});
+
+test('pasting a Bitcoin address switches to public and pays outside the demo', async () => {
+  bitcoinCli('-named', 'createwallet', 'wallet_name=outsider', 'load_on_startup=false');
+  const outside = bitcoinCli('-rpcwallet=outsider', 'getnewaddress');
+  await openSend();
+  await expect(page.getByRole('radio', { name: /Privado/ })).toHaveAttribute('aria-checked', 'true');
+  await recipientField().fill(outside);
+  await expect(page.getByRole('radio', { name: /Público/ })).toHaveAttribute('aria-checked', 'true');
+  await expect(page.locator('#send-to-hint')).toContainText('Modo cambiado a Público');
+  await typeAmount('0,1');
+  await page.locator('#send-submit').click();
+  await expect(page.locator('.result h3')).toHaveText('Enviado');
+  await expect(command(`sendtoaddress ${outside} 0.1`)).toHaveCount(1);
+  await page.getByRole('button', { name: 'Listo' }).click();
+  await settled();
+  await expect(activityRow(`Enviado a ${outside.slice(0, 12)}`)).toContainText('−0,10000000 BTC');
+  expect(Number(bitcoinCli('-rpcwallet=outsider', 'getbalances').match(/"untrusted_pending": ([\d.]+)/)?.[1])).toBe(0.1);
+});
+
+test('rejects text that is not an address', async () => {
+  await openSend();
+  for (const text of ['zbtcrt123', '-rpcconnect=evil.example']) {
+    await recipientField().fill(text);
+    await expect(page.locator('#send-to-hint')).toContainText('No es una dirección válida');
+    await expect(page.locator('#send-submit')).toBeDisabled();
+  }
+  await page.getByRole('button', { name: 'Cancelar' }).click();
+});
+
+test('the server refuses an address that could pass as a command-line option', async () => {
+  // The page never sends this, but the API must not trust the page.
+  const res = await page.request.post('/api/transparent', { data: { from: 'alice', toAddress: '-rpcconnect=evil.example', amount: '0.1' } });
+  const done = JSON.parse((await res.text()).trim().split('\n').at(-1) ?? '{}');
+  expect(done).toMatchObject({ type: 'done', ok: false, error: 'la dirección solo puede tener letras y números' });
+  expect(await res.text()).not.toContain('"type":"start"');
 });
 
 test('scrolls inside the phone with the mouse wheel', async () => {
