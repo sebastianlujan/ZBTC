@@ -64,9 +64,10 @@ pnpm test:e2e       # spawns its own bitcoind nodes: publish, double-spend, soun
 pnpm ui             # http://127.0.0.1:8543
 ```
 
-A local demo wallet for live demos (page copy in Spanish). The main view is a wallet with two
-accounts, Alice and Bob: a shielded ZBTC balance, a Bitcoin fee wallet, send (private or
-public), receive, and the activity list. Every action runs the real CLI (`zbtc`, `bitcoin-cli`,
+A local demo wallet for live demos (page copy in Spanish). The main view is a wallet app,
+shown inside an iPhone frame on wide screens and full screen on phones, with two accounts,
+Alice and Bob: a shielded ZBTC balance, a Bitcoin fee wallet, send (private or public),
+receive, and the activity list. Every action runs the real CLI (`zbtc`, `bitcoin-cli`,
 `bitcoind`). A side panel has three terminal-styled tabs:
 
 - `terminal`: every command, streamed as it runs, with a comment that says why it runs.
@@ -76,9 +77,10 @@ public), receive, and the activity list. Every action runs the real CLI (`zbtc`,
 - `debug`: node and replay state, each wallet's notes, and the decoded `OP_RETURN` envelope:
   byte map, fields, leak checks and the raw transaction JSON.
 
-ZBTC values are simulated units, not BTC. The diagrams use Apache ECharts 5.6.0 from jsDelivr
-(pinned, with a subresource integrity hash), so they need network access; the rest works
-offline. Reset (in `debug`) wipes `.regtest/` and `.zbtc/`, like `pnpm demo`, and uses RPC
+ZBTC values are simulated units, not BTC. The diagrams use Apache ECharts 5.6.0 and the phone
+frame uses devices.css 0.2.0, both from jsDelivr (pinned, with subresource integrity hashes),
+so they need network access; without it the wallet still works, unframed and without
+diagrams. Reset (in `debug`) wipes `.regtest/` and `.zbtc/`, like `pnpm demo`, and uses RPC
 port 18543. If another node already uses that port, set `RPCPORT=`. Set `PORT=` to change the
 HTTP port.
 
