@@ -19,6 +19,8 @@
   font: 14px/1.5 var(--sans);
 }
 * { box-sizing: border-box; }
+/* `hidden` must win over any display a class sets, or a hidden overlay still takes clicks and scroll. */
+[hidden] { display: none !important; }
 html, body { height: 100%; }
 body { margin: 0; background: var(--bg); color: var(--text); -webkit-font-smoothing: antialiased; overflow: hidden; }
 h1, h2, h3 { margin: 0; letter-spacing: -0.02em; }
@@ -71,25 +73,46 @@ button { font: inherit; color: inherit; }
 
 /* ---- Shell: wallet on the left, panel on the right ---- */
 .shell { display: grid; grid-template-columns: minmax(0, 1fr) auto; height: calc(100dvh - var(--nav-h)); }
-main { overflow-y: auto; padding: 40px 20px 80px; }
-.wallet { width: 100%; max-width: 640px; margin: 0 auto; display: grid; gap: 28px; }
+main { overflow: hidden; min-width: 0; }
+
+/* ---- The phone: devices.css draws the iPhone; app.js scales it to fit the stage ---- */
+.stage { height: 100%; display: grid; place-items: center; padding: 24px; overflow: hidden;
+  background:
+    radial-gradient(ellipse 60% 50% at 50% 45%, rgba(82, 168, 255, 0.08), transparent 70%),
+    radial-gradient(circle at 1px 1px, rgba(255, 255, 255, 0.07) 1px, transparent 0) 0 0 / 22px 22px,
+    var(--bg); }
+.phone-box { --scale: 1; position: relative; width: calc(428px * var(--scale)); height: calc(868px * var(--scale)); }
+.phone-box > .device { position: absolute; top: 0; left: 0; transform: scale(var(--scale)); transform-origin: top left; }
+.device .device-screen { position: relative; display: flex; flex-direction: column; overflow: hidden; background: var(--bg); color: var(--text); }
+.statusbar { flex: none; height: 54px; display: flex; align-items: center; justify-content: space-between; padding: 6px 30px 0 40px; font: 600 15px/1 var(--sans); letter-spacing: -0.01em; }
+.status-icons { display: flex; align-items: center; gap: 6px; }
+.status-icons svg { height: 12px; width: auto; fill: currentColor; }
+/* The app scrolls inside the screen: a thin bar while there is more, and a fade at the bottom edge. */
+.app { flex: 1; min-height: 0; overflow-y: auto; padding: 10px 26px 72px; scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+.app::-webkit-scrollbar { width: 4px; }
+.app::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 2px; }
+.device .device-screen::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 56px; background: linear-gradient(rgba(10, 10, 10, 0), var(--bg)); pointer-events: none; z-index: 4; }
+.app-head { display: flex; align-items: center; justify-content: space-between; padding: 8px 0 0; }
+.app-head .who { display: flex; align-items: center; gap: 10px; font-weight: 600; }
+.avatar.lg { width: 32px; height: 32px; border-radius: 10px; font-size: 13px; }
+.wallet { display: grid; gap: 36px; }
 
 /* ---- Wallet ---- */
-.hero { display: grid; justify-items: center; gap: 10px; padding: 28px 0 8px; text-align: center; }
+.hero { display: grid; justify-items: center; gap: 14px; padding: 28px 0 4px; text-align: center; }
 .hero-label { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; }
 .hero-label .icon { color: var(--green); }
 .balance { display: flex; align-items: baseline; gap: 10px; }
-.balance .amount { font-size: clamp(44px, 9vw, 64px); font-weight: 600; letter-spacing: -0.04em; line-height: 1; font-variant-numeric: tabular-nums; }
+.balance .amount { font-size: 54px; font-weight: 600; letter-spacing: -0.04em; line-height: 1; font-variant-numeric: tabular-nums; }
 .balance .unit { font-size: 20px; font-weight: 500; color: var(--muted); }
 .hero-sub { color: var(--muted); font-size: 13px; }
-.hero-actions { display: flex; gap: 10px; margin-top: 10px; }
-.hero-actions .btn { min-width: 140px; }
+.hero-actions { display: flex; gap: 12px; margin-top: 20px; width: 100%; }
+.hero-actions .btn { flex: 1; min-width: 0; }
 
 .info { position: relative; display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; border: 1px solid var(--border-strong); color: var(--muted); font: 600 11px/1 var(--sans); cursor: help; align-self: center; }
-.info:hover::after, .info:focus::after { content: attr(data-tip); position: absolute; top: calc(100% + 8px); left: 50%; transform: translateX(-50%); width: 280px; padding: 10px 12px; border-radius: 8px; background: var(--bg-soft); border: 1px solid var(--border-strong); color: var(--text); font: 400 12.5px/1.5 var(--sans); text-align: left; z-index: 10; box-shadow: 0 12px 30px -12px rgba(0, 0, 0, 0.8); }
+.info:hover::after, .info:focus::after { content: attr(data-tip); position: absolute; top: calc(100% + 8px); right: -8px; width: 260px; padding: 10px 12px; border-radius: 8px; background: var(--bg-soft); border: 1px solid var(--border-strong); color: var(--text); font: 400 12.5px/1.5 var(--sans); text-align: left; z-index: 10; box-shadow: 0 12px 30px -12px rgba(0, 0, 0, 0.8); }
 
-.cards { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
-.card { border: 1px solid var(--border); border-radius: 12px; padding: 16px; background: var(--bg-elev); display: grid; gap: 6px; }
+.cards { display: grid; gap: 14px; grid-template-columns: minmax(0, 1fr); }
+.card { border: 1px solid var(--border); border-radius: 14px; padding: 18px 20px; background: var(--bg-elev); display: grid; gap: 8px; }
 .card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 13px; }
 .card-head .who { display: flex; align-items: center; gap: 6px; }
 .card-value { font-size: 22px; font-weight: 600; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
@@ -103,12 +126,12 @@ main { overflow-y: auto; padding: 40px 20px 80px; }
 .tag.blue { background: var(--blue-bg); color: var(--blue); }
 .tag.gray { background: var(--gray-bg); color: var(--gray); }
 
-.banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; border: 1px solid rgba(242, 169, 59, 0.25); background: var(--amber-bg); border-radius: 10px; color: var(--amber); font-size: 13px; }
+.banner { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 14px 16px; border: 1px solid rgba(242, 169, 59, 0.25); background: var(--amber-bg); border-radius: 10px; color: var(--amber); font-size: 13px; }
 
-.section-title { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 8px; }
+.section-title { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 14px; }
 .section-title h2 { font-size: 15px; font-weight: 600; }
 .list { border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: var(--bg-elev); }
-.row { display: grid; grid-template-columns: 36px minmax(0, 1fr) auto; gap: 12px; align-items: center; width: 100%; padding: 12px 14px; border: 0; border-top: 1px solid var(--border); background: transparent; text-align: left; cursor: pointer; transition: background 150ms var(--ease); }
+.row { display: grid; grid-template-columns: 36px minmax(0, 1fr) auto; gap: 14px; align-items: center; width: 100%; padding: 16px; border: 0; border-top: 1px solid var(--border); background: transparent; text-align: left; cursor: pointer; transition: background 150ms var(--ease); }
 .row:first-child { border-top: 0; }
 .row:hover { background: var(--bg-soft); }
 .row[disabled] { cursor: default; }
@@ -125,7 +148,7 @@ main { overflow-y: auto; padding: 40px 20px 80px; }
 .row-amount.in { color: var(--green); }
 .empty { padding: 18px; color: var(--muted); font-size: 13px; border: 1px dashed var(--border-strong); border-radius: 12px; }
 
-.onboard { display: grid; justify-items: center; gap: 14px; text-align: center; padding: 72px 0; }
+.onboard { display: grid; justify-items: center; gap: 14px; text-align: center; padding: 96px 6px 0; }
 .onboard .logo { width: 48px; height: 48px; border-radius: 14px; }
 .onboard .logo svg { width: 26px; height: 26px; }
 .onboard h1 { font-size: 28px; }
@@ -145,15 +168,19 @@ main { overflow-y: auto; padding: 40px 20px 80px; }
 .progress li.failed { color: var(--red); }
 .progress li .spinner { margin-top: 2px; }
 
-/* ---- Dialogs (send / receive) ---- */
-dialog.sheet { width: min(460px, calc(100vw - 24px)); max-height: calc(100dvh - 48px); padding: 0; border: 1px solid var(--border-strong); border-radius: 14px; background: var(--bg-elev); color: var(--text); box-shadow: 0 30px 80px -20px rgba(0, 0, 0, 0.9); }
-dialog.sheet::backdrop { background: rgba(0, 0, 0, 0.6); backdrop-filter: blur(4px); }
-dialog.sheet[open] { animation: rise 260ms var(--ease); }
-@keyframes rise { from { opacity: 0; transform: translateY(8px) scale(0.98); } to { opacity: 1; transform: none; } }
-.sheet-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 18px; border-bottom: 1px solid var(--border); }
+/* ---- Bottom sheets inside the phone (send / receive), like iOS ---- */
+.sheet-layer { position: absolute; inset: 0; z-index: 5; display: flex; flex-direction: column; justify-content: flex-end; }
+.sheet-backdrop { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.55); animation: fade 200ms var(--ease); }
+.sheet { position: relative; max-height: 90%; overflow-y: auto; border-radius: 28px 28px 0 0; border-top: 1px solid var(--border-strong); background: var(--bg-elev); padding-bottom: 26px; scrollbar-width: none; animation: slide-up 340ms var(--ease); }
+.grabber { width: 36px; height: 5px; border-radius: 3px; background: var(--border-strong); margin: 8px auto 0; }
+@keyframes slide-up { from { transform: translateY(100%); } to { transform: none; } }
+@keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes rise { from { opacity: 0; transform: translateY(-8px) scale(0.98); } to { opacity: 1; transform: none; } }
+.sheet-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 18px 12px; border-bottom: 1px solid var(--border); }
 .sheet-head h2 { font-size: 16px; font-weight: 600; }
-.sheet-body { padding: 18px; display: grid; gap: 16px; }
-.sheet-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 14px 18px; border-top: 1px solid var(--border); }
+.sheet-body { padding: 16px 18px; display: grid; gap: 14px; }
+.sheet-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 18px 0; border-top: 1px solid var(--border); }
+.sheet-foot .btn { flex: 1; }
 .icon-btn { display: grid; place-items: center; width: 30px; height: 30px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; }
 .icon-btn:hover { background: var(--bg-hover); color: var(--text); }
 
@@ -194,12 +221,24 @@ dialog.sheet[open] { animation: rise 260ms var(--ease); }
 .result .big-icon.bad { background: var(--red-bg); color: var(--red); }
 .result .big-icon .icon { width: 22px; height: 22px; }
 
-.toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 40; display: flex; align-items: center; gap: 10px; max-width: min(520px, calc(100vw - 32px)); padding: 10px 14px; border-radius: 10px; border: 1px solid var(--border-strong); background: var(--bg-soft); box-shadow: 0 16px 40px -16px rgba(0, 0, 0, 0.9); font-size: 13px; animation: rise 260ms var(--ease); }
+/* Toasts drop in under the status bar, like an iOS notification. */
+.phone-toast { position: absolute; top: 56px; left: 10px; right: 10px; z-index: 6; pointer-events: none; }
+.toast { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-radius: 18px; border: 1px solid var(--border-strong); background: rgba(28, 28, 28, 0.92); backdrop-filter: blur(16px); box-shadow: 0 16px 40px -16px rgba(0, 0, 0, 0.9); font-size: 13px; animation: rise 300ms var(--ease); pointer-events: auto; }
 .toast.bad { border-color: rgba(255, 99, 105, 0.4); color: var(--red); }
 
 /* ---- Side panel: terminal | explorer | debug ---- */
-.panel { display: flex; flex-direction: column; width: 0; min-height: 0; background: var(--term-bg); border-left: 1px solid var(--border); color: var(--term-text); font: 12.5px/1.55 var(--mono); overflow: hidden; }
-.panel.open { width: clamp(420px, 42vw, 640px); }
+.panel { position: relative; display: flex; flex-direction: column; width: 0; min-height: 0; background: var(--term-bg); border-left: 1px solid var(--border); color: var(--term-text); font: 12.5px/1.55 var(--mono); overflow: hidden; }
+/* --panel-w is set by dragging the left edge; without it the panel takes its default width. */
+.panel.open { width: var(--panel-w, clamp(420px, 42vw, 640px)); }
+
+/* Left edge of the panel: drag on the x axis to change its width. */
+.panel-resizer { position: absolute; top: 0; bottom: 0; left: 0; z-index: 3; width: 7px; cursor: col-resize; touch-action: none; }
+.panel-resizer::after { content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 2px; background: transparent; transition: background 150ms var(--ease); }
+.panel-resizer:hover::after, .panel-resizer:focus-visible::after, .resizing .panel-resizer::after { background: var(--blue); }
+.panel-resizer:focus-visible { outline: none; }
+.panel:not(.open) .panel-resizer, .panel.max .panel-resizer { display: none; }
+/* While dragging, the cursor stays a resize cursor over everything, and text is not selected. */
+body.resizing, body.resizing * { cursor: col-resize !important; user-select: none !important; }
 .panel.max { position: fixed; inset: var(--nav-h) 0 0 0; z-index: 15; width: auto; border-left: 0; }
 .panel-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; height: 40px; padding: 0 10px 0 12px; border-bottom: 1px solid var(--term-line); background: var(--term-bar); flex: none; }
 .tabs { display: flex; align-items: center; gap: 2px; }
@@ -288,15 +327,24 @@ dialog.sheet[open] { animation: rise 260ms var(--ease); }
   .shell { grid-template-columns: minmax(0, 1fr); }
   .panel { position: fixed; left: 0; right: 0; bottom: 0; z-index: 15; width: auto; height: 0; border-left: 0; border-top: 1px solid var(--border); }
   .panel.open { width: auto; height: 70dvh; }
+  .panel-resizer { display: none; }
   .panel.max { top: var(--nav-h); height: auto; }
   .nav .chain-pill .label, .nav .net { display: none; }
-  main { padding-bottom: 120px; }
 }
+/* On a real phone the page already is the phone: drop the frame and fill the screen. */
 @media (max-width: 560px) {
   .nav { padding: 0 10px; gap: 6px; }
-  .brand span:last-child, .slash { display: none; }
-  .accounts button { padding: 0 6px 0 4px; }
-  .hero-actions .btn { min-width: 0; flex: 1; }
+  .brand span:last-child, .slash, .nav .label { display: none; }
+  .accounts button { padding: 0 4px; }
+  .stage { padding: 0; place-items: stretch; background: var(--bg); }
+  /* Selectors match devices.css's own (.device-iphone-14-pro.device-black .device-frame) so these win. */
+  .stage .phone-box, .stage .phone-box > .device.device-iphone-14-pro,
+  .stage .device.device-iphone-14-pro.device-black .device-frame, .stage .device.device-iphone-14-pro .device-screen {
+    position: static; width: 100%; height: 100%; transform: none; padding: 0; border: 0; border-radius: 0; box-shadow: none; background: var(--bg); }
+  .stage .device.device-iphone-14-pro .device-screen { position: relative; }
+  .phone-box .device-stripe, .phone-box .device-header, .phone-box .device-sensors, .phone-box .device-btns,
+  .phone-box .device-power, .phone-box .device-home, .statusbar { display: none; }
+  .phone-toast { top: 10px; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
