@@ -13,3 +13,8 @@ build/
 /v1/.regtest
 /v1/.zbtc
 /v2/.demo
+
+# UI tests: their own chain and wallets, and Playwright's output.
+/v1/.ui-test
+/v1/test-results
+/v1/playwright-report

@@ -40,7 +40,12 @@ checking three things:
 pnpm typecheck
 pnpm test:unit      # codec, crypto, tree, indexer (synthetic blocks), circuit C1–C12
 pnpm test:e2e       # spawns its own bitcoind nodes: publish, double-spend, soundness, reorg, agreement, recovery
+pnpm test:ui        # Playwright, installed Chrome: the demo wallet end to end on its own node
 ```
+
+`test:ui` drives the page with real clicks, wheel and typing, against its own server (port
+8743), node (RPC port 18743) and state directory (`.ui-test/`), so it never touches a running
+`pnpm ui` demo.
 
 ## CLI
 
