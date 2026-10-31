@@ -19,6 +19,8 @@
   font: 14px/1.5 var(--sans);
 }
 * { box-sizing: border-box; }
+/* `hidden` must win over any display a class sets, or a hidden overlay still takes clicks and scroll. */
+[hidden] { display: none !important; }
 html, body { height: 100%; }
 body { margin: 0; background: var(--bg); color: var(--text); -webkit-font-smoothing: antialiased; overflow: hidden; }
 h1, h2, h3 { margin: 0; letter-spacing: -0.02em; }
